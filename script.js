@@ -1,7 +1,41 @@
 document.addEventListener('DOMContentLoaded', function () {
   'use strict';
 
-  const SHIFT_PATTERNS = ['早番', '日勤A', '日勤B', '遅番', '夜勤', '明け', '休み'];
+  const SHIFT_DEFINITIONS = [
+    { name: '早番', start: 7, end: 16 },
+    { name: '日勤A', start: 9, end: 18 },
+    { name: '日勤B', start: 9, end: 16 },
+    { name: '遅番', start: 15, end: 21 },
+    { name: '夜勤A', start: 16, end: 33 },
+    { name: '夜勤B', start: 18, end: 33 },
+    { name: '夜勤C', start: 21, end: 31 },
+  ];
+
+  const HOURLY_NEEDS = {
+    bathDay: {
+      '7-9': 3,
+      '9-15': 5,
+      '16-18': 3,
+      '18-24': 2,
+      '0-7': 2,
+    },
+    normalDay: {
+      '7-9': 3,
+      '9-15': 4,
+      '16-18': 3,
+      '18-24': 2,
+      '0-7': 2,
+    },
+    wednesday: {
+      '7-9': 3,
+      '9-15': 2,
+      '16-18': 4,
+      '18-24': 2,
+      '0-7': 2,
+    },
+  };
+
+  const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
   const WEEKDAY_INDEX_MAP = {
     sun: '0',
     mon: '1',
@@ -227,6 +261,108 @@ document.addEventListener('DOMContentLoaded', function () {
     return uniqueValues;
   }
 
+  function getDayType(dayOfWeek) {
+    if (dayOfWeek === 3) return 'wednesday';
+    if (dayOfWeek === 0 || dayOfWeek === 6) return 'normalDay';
+    return 'bathDay';
+  }
+
+  function buildHourlyNeeds(dayType) {
+    const hourlyTemplate = HOURLY_NEEDS[dayType];
+    const hourlyNeeds = new Array(24).fill(0);
+    if (!hourlyTemplate) return hourlyNeeds;
+
+    Object.entries(hourlyTemplate).forEach(([range, count]) => {
+      const [startStr, endStr] = range.split('-');
+      const start = parseInt(startStr, 10);
+      const end = parseInt(endStr, 10);
+      if (Number.isNaN(start) || Number.isNaN(end)) return;
+      for (let hour = start; hour < end; hour++) {
+        hourlyNeeds[hour % 24] = count;
+      }
+    });
+
+    return hourlyNeeds;
+  }
+
+  function computeShiftRequirements(dayType) {
+    const hourlyNeeds = buildHourlyNeeds(dayType);
+    const remainingNeeds = hourlyNeeds.slice();
+    const requirements = {};
+
+    for (let iteration = 0; iteration < 500; iteration++) {
+      let bestShift = null;
+      let bestScore = 0;
+
+      SHIFT_DEFINITIONS.forEach(shift => {
+        let score = 0;
+        for (let hour = shift.start; hour < shift.end; hour++) {
+          score += remainingNeeds[hour % 24];
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestShift = shift;
+        }
+      });
+
+      if (!bestShift || bestScore === 0) {
+        break;
+      }
+
+      requirements[bestShift.name] = (requirements[bestShift.name] || 0) + 1;
+      for (let hour = bestShift.start; hour < bestShift.end; hour++) {
+        const index = hour % 24;
+        if (remainingNeeds[index] > 0) {
+          remainingNeeds[index] -= 1;
+        }
+      }
+
+      if (!remainingNeeds.some(value => value > 0)) {
+        break;
+      }
+    }
+
+    return requirements;
+  }
+
+  function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
+    if (!cellRecord) return;
+    cellRecord.assignment = '休み';
+    cellRecord.cell.textContent = '休み';
+    cellRecord.cell.style.backgroundColor = backgroundColor;
+    cellRecord.isLockedOff = true;
+  }
+
+  function markNightShiftRest(cellRecord) {
+    markCellAsOff(cellRecord, '#fff2cc');
+  }
+
+  function assignShiftToCell(cellRecord, shiftName) {
+    if (!cellRecord) return;
+    cellRecord.assignment = shiftName;
+    cellRecord.cell.textContent = shiftName;
+    cellRecord.cell.style.backgroundColor = '#e6f7ff';
+  }
+
+  function canAssignShift(record, dayIndex, shiftName) {
+    if (!record) return false;
+    const cellRecord = record.cells[dayIndex];
+    if (!cellRecord || cellRecord.isLockedOff) return false;
+    if (cellRecord.assignment) return false;
+
+    const available = Array.isArray(record.staffObject.availableShifts)
+      ? record.staffObject.availableShifts
+      : [];
+    if (!available.includes(shiftName)) return false;
+
+    const maxDays = record.staffObject.maxWorkingDays;
+    if (typeof maxDays === 'number' && !Number.isNaN(maxDays) && record.workingDays >= maxDays) {
+      return false;
+    }
+
+    return true;
+  }
+
   function generateShift() {
     const tableBody = document.getElementById('result-body');
     if (!tableBody || !yearSelect || !monthSelect) return;
@@ -237,9 +373,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!year || !month) return;
 
     const daysInMonth = new Date(year, month, 0).getDate();
-    const staffCellRecords = [];
-
-    state.staff.forEach(staff => {
+    const staffRecords = state.staff.map(staff => {
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
       nameCell.textContent = staff.name;
@@ -254,12 +388,95 @@ document.addEventListener('DOMContentLoaded', function () {
         const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         const dayOfWeek = new Date(year, month - 1, day).getDay();
 
-        cellRecords.push({ cell, dateStr, dayOfWeek });
+        cellRecords.push({
+          cell,
+          dateStr,
+          dayOfWeek,
+          assignment: '',
+          isLockedOff: false,
+        });
         row.appendChild(cell);
       }
 
-      staffCellRecords.push({ staffObject: staff, cells: cellRecords });
       tableBody.appendChild(row);
+
+      return {
+        staffObject: staff,
+        fixedHolidays: normalizeFixedHolidays(staff),
+        workingDays: 0,
+        nightShiftRestDays: new Set(),
+        cells: cellRecords,
+      };
+    });
+
+    // Apply fixed holidays first.
+    staffRecords.forEach(record => {
+      if (!record.fixedHolidays.length) return;
+      record.cells.forEach(cellRecord => {
+        if (record.fixedHolidays.includes(String(cellRecord.dayOfWeek))) {
+          markCellAsOff(cellRecord);
+        }
+      });
+    });
+
+    // Apply requested day-offs afterwards to overwrite as needed.
+    staffRecords.forEach(record => {
+      record.cells.forEach(cellRecord => {
+        if (isDayOff(record.staffObject, cellRecord.dateStr)) {
+          markCellAsOff(cellRecord);
+        }
+      });
+    });
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
+
+      staffRecords.forEach(record => {
+        if (record.nightShiftRestDays.has(dayIndex)) {
+          const cellRecord = record.cells[dayIndex];
+          if (cellRecord && !cellRecord.isLockedOff) {
+            markNightShiftRest(cellRecord);
+          }
+          record.nightShiftRestDays.delete(dayIndex);
+        }
+      });
+
+      const dayType = getDayType(dayOfWeek);
+      const requirements = computeShiftRequirements(dayType);
+
+      SHIFT_DEFINITIONS.forEach(shift => {
+        let remaining = requirements[shift.name] || 0;
+        while (remaining > 0) {
+          const candidate = staffRecords.find(record => canAssignShift(record, dayIndex, shift.name));
+          if (!candidate) {
+            break;
+          }
+
+          const cellRecord = candidate.cells[dayIndex];
+          assignShiftToCell(cellRecord, shift.name);
+          candidate.workingDays += 1;
+
+          if (shift.name.startsWith('夜勤')) {
+            const nextDayIndex = dayIndex + 1;
+            if (nextDayIndex < candidate.cells.length) {
+              candidate.nightShiftRestDays.add(nextDayIndex);
+            }
+          }
+
+          remaining -= 1;
+        }
+      });
+    }
+  }
+
+  function isDayOff(staffObject, dateStr) {
+    return state.dayoffs.some(dayoff => {
+      const matchesStaffByName = dayoff.staffName && dayoff.staffName === staffObject.name;
+      const matchesStaffById = !dayoff.staffName && dayoff.staffId && dayoff.staffId === staffObject.id;
+      if (!matchesStaffByName && !matchesStaffById) return false;
+      return dayoff.date === dateStr;
     });
 
     // Apply fixed holidays first.
