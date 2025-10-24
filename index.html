@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>シフト作成ツール</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header class="page-header">
+        <div class="container">
+            <h1>シフト作成ツール</h1>
+        </div>
+    </header>
+
+    <main class="page-main">
+        <div class="container">
+            <h2 id="main-title" class="visually-hidden">シフト作成の設定</h2>
+
+            <!-- スタッフ管理セクション -->
+            <section class="panel" aria-labelledby="staff-management-title">
+                <h3 id="staff-management-title">スタッフ管理</h3>
+                <form class="form-inline">
+                    <label for="staff-name">スタッフ名:</label>
+                    <input type="text" id="staff-name" autocomplete="name" required>
+                    <button type="button" id="add-staff-button">スタッフを追加</button>
+                </form>
+                <p>登録済みスタッフ一覧:</p>
+                <ul id="staff-list" aria-live="polite"></ul>
+            </section>
+
+            <!-- 対象年月セクション -->
+            <section class="panel" aria-labelledby="target-month-title">
+                <h3 id="target-month-title">対象年月</h3>
+                <form class="form-inline">
+                    <label for="target-year">年:</label>
+                    <select id="target-year"></select>
+                    <label for="target-month">月:</label>
+                    <select id="target-month"></select>
+                </form>
+            </section>
+
+            <!-- 希望休登録セクション -->
+            <section class="panel" aria-labelledby="dayoff-title">
+                <h3 id="dayoff-title">希望休の登録</h3>
+                <form class="form-inline">
+                    <label for="dayoff-staff">スタッフ:</label>
+                    <select id="dayoff-staff">
+                        <option value="">スタッフを選択</option>
+                    </select>
+                    <label for="dayoff-date">日付:</label>
+                    <input type="date" id="dayoff-date">
+                    <button type="button" id="add-dayoff-button">希望休を登録</button>
+                </form>
+                <p>登録された希望休:</p>
+                <ul id="dayoff-list"></ul>
+            </section>
+            
+            <!-- 実行セクション -->
+            <section class="panel execution-area">
+                <button id="generate-btn" class="primary-action">この内容でシフトを作成する</button>
+            </section>
+
+            <!-- 結果表示セクション -->
+            <section id="result-area" class="panel" aria-labelledby="result-title">
+                <h2 id="result-title">シフト作成結果</h2>
+                <div class="table-wrapper">
+                    <table>
+                        <!-- ヘッダーはJavaScriptで生成 -->
+                    </table>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="page-footer">
+        <div class="container">
+            <p><small>&copy; シフト作成ツール</small></p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
