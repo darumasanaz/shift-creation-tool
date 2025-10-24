@@ -2,7 +2,15 @@ document.addEventListener('DOMContentLoaded', function () {
   'use strict';
 
   const SHIFT_PATTERNS = ['早番', '日勤A', '日勤B', '遅番', '夜勤', '明け', '休み'];
-  const WEEKDAY_VALUES = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const WEEKDAY_INDEX_MAP = {
+    sun: '0',
+    mon: '1',
+    tue: '2',
+    wed: '3',
+    thu: '4',
+    fri: '5',
+    sat: '6',
+  };
 
   const staffNameInput = document.getElementById('staff-name');
   const addStaffButton = document.getElementById('add-staff-button');
@@ -104,10 +112,17 @@ document.addEventListener('DOMContentLoaded', function () {
     const date = dayoffDateInput.value;
     if (!staffId || !date) return;
 
-    const isDuplicate = state.dayoffs.some(dayoff => dayoff.staffId === staffId && dayoff.date === date);
+    const staff = state.staff.find(item => item.id === staffId);
+    const staffName = staff ? staff.name : '';
+
+    const isDuplicate = state.dayoffs.some(dayoff => {
+      const matchesStaffId = dayoff.staffId === staffId;
+      const matchesStaffName = dayoff.staffName && staffName && dayoff.staffName === staffName;
+      return (matchesStaffId || matchesStaffName) && dayoff.date === date;
+    });
     if (isDuplicate) return;
 
-    state.dayoffs.push({ staffId, date });
+    state.dayoffs.push({ staffId, staffName, date });
     renderDayoffList();
   }
 
@@ -118,7 +133,7 @@ document.addEventListener('DOMContentLoaded', function () {
     state.dayoffs.forEach(dayoff => {
       const li = document.createElement('li');
       const staff = state.staff.find(item => item.id === dayoff.staffId);
-      const staffName = staff ? staff.name : '不明なスタッフ';
+      const staffName = dayoff.staffName || (staff ? staff.name : '不明なスタッフ');
       li.textContent = `${staffName} - ${dayoff.date}`;
       dayoffList.appendChild(li);
     });
@@ -189,6 +204,29 @@ document.addEventListener('DOMContentLoaded', function () {
     resultTable.appendChild(tbody);
   }
 
+  function normalizeFixedHolidays(staffObject) {
+    if (!staffObject) return [];
+    if (!Array.isArray(staffObject.fixedHolidays)) {
+      staffObject.fixedHolidays = [];
+      return staffObject.fixedHolidays;
+    }
+
+    const normalized = staffObject.fixedHolidays
+      .map(value => {
+        if (value == null) return null;
+        const strValue = String(value).trim();
+        if (strValue === '') return null;
+        if (/^[0-6]$/.test(strValue)) return strValue;
+        const mapped = WEEKDAY_INDEX_MAP[strValue];
+        return mapped != null ? mapped : null;
+      })
+      .filter(value => value != null);
+
+    const uniqueValues = Array.from(new Set(normalized));
+    staffObject.fixedHolidays = uniqueValues;
+    return uniqueValues;
+  }
+
   function generateShift() {
     const tableBody = document.getElementById('result-body');
     if (!tableBody || !yearSelect || !monthSelect) return;
@@ -199,6 +237,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!year || !month) return;
 
     const daysInMonth = new Date(year, month, 0).getDate();
+    const staffCellRecords = [];
 
     state.staff.forEach(staff => {
       const row = document.createElement('tr');
@@ -206,20 +245,52 @@ document.addEventListener('DOMContentLoaded', function () {
       nameCell.textContent = staff.name;
       row.appendChild(nameCell);
 
+      const cellRecords = [];
       for (let day = 1; day <= daysInMonth; day++) {
         const cell = document.createElement('td');
-        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const isDayOff = state.dayoffs.some(d => d.staffId === staff.id && d.date === dateStr);
+        cell.textContent = '';
+        cell.style.backgroundColor = '';
 
-        if (isDayOff) {
-          cell.textContent = '休み';
-          cell.style.backgroundColor = '#ffdcdc';
-        } else {
-          cell.textContent = '';
-        }
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const dayOfWeek = new Date(year, month - 1, day).getDay();
+
+        cellRecords.push({ cell, dateStr, dayOfWeek });
         row.appendChild(cell);
       }
+
+      staffCellRecords.push({ staffObject: staff, cells: cellRecords });
       tableBody.appendChild(row);
+    });
+
+    // Apply fixed holidays first.
+    staffCellRecords.forEach(({ staffObject, cells }) => {
+      const fixedHolidays = normalizeFixedHolidays(staffObject);
+      if (!fixedHolidays.length) return;
+      cells.forEach(({ cell, dayOfWeek }) => {
+        if (fixedHolidays.includes(String(dayOfWeek))) {
+          cell.textContent = '休み';
+          cell.style.backgroundColor = '#ffdcdc';
+        }
+      });
+    });
+
+    // Apply requested day-offs afterwards to overwrite as needed.
+    staffCellRecords.forEach(({ staffObject, cells }) => {
+      cells.forEach(({ cell, dateStr }) => {
+        if (isDayOff(staffObject, dateStr)) {
+          cell.textContent = '休み';
+          cell.style.backgroundColor = '#ffdcdc';
+        }
+      });
+    });
+  }
+
+  function isDayOff(staffObject, dateStr) {
+    return state.dayoffs.some(dayoff => {
+      const matchesStaffByName = dayoff.staffName && dayoff.staffName === staffObject.name;
+      const matchesStaffById = !dayoff.staffName && dayoff.staffId && dayoff.staffId === staffObject.id;
+      if (!matchesStaffByName && !matchesStaffById) return false;
+      return dayoff.date === dateStr;
     });
   }
 
@@ -242,9 +313,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function populateWeekdayCheckboxes(staff) {
     if (!modalWeekdays) return;
+    const normalizedFixedHolidays = normalizeFixedHolidays(staff);
     const inputs = modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]');
     inputs.forEach(input => {
-      input.checked = staff.fixedHolidays.includes(input.value);
+      const weekdayIndex = WEEKDAY_INDEX_MAP[input.value];
+      input.checked = weekdayIndex != null && normalizedFixedHolidays.includes(weekdayIndex);
     });
   }
 
@@ -306,8 +379,10 @@ document.addEventListener('DOMContentLoaded', function () {
     if (modalWeekdays) {
       const selectedWeekdays = Array.from(modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]'))
         .filter(input => input.checked)
-        .map(input => input.value);
-      staff.fixedHolidays = selectedWeekdays.filter(value => WEEKDAY_VALUES.includes(value));
+        .map(input => WEEKDAY_INDEX_MAP[input.value])
+        .filter(value => value != null);
+      staff.fixedHolidays = selectedWeekdays;
+      normalizeFixedHolidays(staff);
     }
 
     if (modalMaxDays) {
