@@ -27,7 +27,7 @@
                     <button type="button" id="add-staff-button">スタッフを追加</button>
                 </form>
                 <p>登録済みスタッフ一覧:</p>
-                <ul id="staff-list" aria-live="polite"></ul>
+                <ul id="staff-list" class="editable-list" aria-live="polite"></ul>
             </section>
 
             <!-- 対象年月セクション -->
@@ -56,7 +56,7 @@
                 <p>登録された希望休:</p>
                 <ul id="dayoff-list"></ul>
             </section>
-            
+
             <!-- 実行セクション -->
             <section class="panel execution-area">
                 <button id="generate-btn" class="primary-action">この内容でシフトを作成する</button>
@@ -79,6 +79,30 @@
             <p><small>&copy; シフト作成ツール</small></p>
         </div>
     </footer>
+
+    <div id="staff-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <h3 id="modal-title"></h3>
+            <form id="modal-form">
+                <div id="modal-shifts" class="checkbox-group"></div>
+                <div id="modal-weekdays" class="checkbox-group">
+                    <label><input type="checkbox" name="modal-weekday" value="mon"> 月</label>
+                    <label><input type="checkbox" name="modal-weekday" value="tue"> 火</label>
+                    <label><input type="checkbox" name="modal-weekday" value="wed"> 水</label>
+                    <label><input type="checkbox" name="modal-weekday" value="thu"> 木</label>
+                    <label><input type="checkbox" name="modal-weekday" value="fri"> 金</label>
+                    <label><input type="checkbox" name="modal-weekday" value="sat"> 土</label>
+                    <label><input type="checkbox" name="modal-weekday" value="sun"> 日</label>
+                </div>
+                <label for="modal-max-days">月間勤務日数上限:</label>
+                <input type="number" id="modal-max-days" min="0">
+                <div class="modal-actions">
+                    <button type="button" id="modal-save-btn">保存</button>
+                    <button type="button" id="modal-cancel-btn">キャンセル</button>
+                </div>
+            </form>
+        </div>
+    </div>
 
     <script src="script.js"></script>
 </body>

@@ -1,12 +1,13 @@
-
 document.addEventListener('DOMContentLoaded', function () {
   'use strict';
 
-  // --- 1. HTMLの要素をすべて取得 ---
+  const SHIFT_PATTERNS = ['早番', '日勤A', '日勤B', '遅番', '夜勤', '明け', '休み'];
+  const WEEKDAY_INDEX_TO_KEY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
   const staffNameInput = document.getElementById('staff-name');
   const addStaffButton = document.getElementById('add-staff-button');
   const staffList = document.getElementById('staff-list');
-  
+
   const staffSelect = document.getElementById('dayoff-staff');
   const dayoffDateInput = document.getElementById('dayoff-date');
   const addDayoffButton = document.getElementById('add-dayoff-button');
@@ -17,67 +18,138 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const generateButton = document.getElementById('generate-btn');
 
-  // --- 2. アプリケーションの状態を管理する場所 ---
+  const staffModal = document.getElementById('staff-modal');
+  const modalTitle = document.getElementById('modal-title');
+  const modalForm = document.getElementById('modal-form');
+  const modalShifts = document.getElementById('modal-shifts');
+  const modalWeekdays = document.getElementById('modal-weekdays');
+  const modalMaxDays = document.getElementById('modal-max-days');
+  const modalSaveBtn = document.getElementById('modal-save-btn');
+  const modalCancelBtn = document.getElementById('modal-cancel-btn');
+
   const state = {
     staff: [],
     dayoffs: [],
+    editingStaffId: null,
   };
 
-  // --- 3. すべての関数をここで定義 ---
+  function generateStaffId() {
+    return `staff-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
 
-  /** スタッフを追加する関数 */
+  function createStaff(name) {
+    return {
+      id: generateStaffId(),
+      name,
+      availableShifts: [...SHIFT_PATTERNS],
+      fixedHolidays: [],
+      maxWorkingDays: null,
+    };
+  }
+
+  function findStaffById(staffId) {
+    return state.staff.find(staff => staff.id === staffId) || null;
+  }
+
+  function getWeekdayKeyFromIndex(index) {
+    return WEEKDAY_INDEX_TO_KEY[index] || null;
+  }
+
+  function formatDate(year, month, day) {
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  function markCellAsDayOff(cell) {
+    if (!cell) return;
+    cell.textContent = '休み';
+    cell.style.backgroundColor = '#ffdcdc';
+  }
+
+  function resetCell(cell) {
+    if (!cell) return;
+    cell.textContent = '';
+    cell.style.backgroundColor = '';
+  }
+
   function addStaff(event) {
     event.preventDefault();
-    const name = staffNameInput.value.trim();
-    if (name && !state.staff.includes(name)) { // 重複もチェック
-      state.staff.push(name);
-      renderStaffList();
+    const name = staffNameInput ? staffNameInput.value.trim() : '';
+    if (!name) return;
+
+    const isDuplicate = state.staff.some(staff => staff.name === name);
+    if (isDuplicate) return;
+
+    state.staff.push(createStaff(name));
+    renderStaffList();
+    if (staffNameInput) {
       staffNameInput.value = '';
     }
   }
 
-  /** スタッフリストとプルダウンを画面に描画する関数 */
   function renderStaffList() {
-    staffList.innerHTML = '';
-    staffSelect.innerHTML = '<option value="">スタッフを選択</option>';
-    state.staff.forEach(name => {
-      const li = document.createElement('li');
-      li.textContent = name;
-      staffList.appendChild(li);
-      const option = document.createElement('option');
-      option.value = name;
-      option.textContent = name;
-      staffSelect.appendChild(option);
+    if (staffList) {
+      staffList.innerHTML = '';
+    }
+    if (staffSelect) {
+      staffSelect.innerHTML = '<option value="">スタッフを選択</option>';
+    }
+
+    state.staff.forEach(staff => {
+      if (staffList) {
+        const li = document.createElement('li');
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = staff.name;
+        li.appendChild(nameSpan);
+
+        const editButton = document.createElement('button');
+        editButton.type = 'button';
+        editButton.className = 'edit-btn';
+        editButton.textContent = '編集';
+        editButton.setAttribute('data-staff-id', staff.id);
+        li.appendChild(editButton);
+
+        staffList.appendChild(li);
+      }
+
+      if (staffSelect) {
+        const option = document.createElement('option');
+        option.value = staff.id;
+        option.textContent = staff.name;
+        staffSelect.appendChild(option);
+      }
     });
   }
 
-  /** 希望休を登録する関数 */
   function addDayoff(event) {
     event.preventDefault();
-    const staffName = staffSelect.value;
+    if (!staffSelect || !dayoffDateInput) return;
+
+    const staffId = staffSelect.value;
     const date = dayoffDateInput.value;
-    if (staffName && date) {
-      // 同じ日の希望休が重複しないようにチェック
-      const isDuplicate = state.dayoffs.some(d => d.staff === staffName && d.date === date);
-      if (!isDuplicate) {
-        state.dayoffs.push({ staff: staffName, date: date });
-        renderDayoffList();
-      }
-    }
+    if (!staffId || !date) return;
+
+    const isDuplicate = state.dayoffs.some(dayoff => dayoff.staffId === staffId && dayoff.date === date);
+    if (isDuplicate) return;
+
+    state.dayoffs.push({ staffId, date });
+    renderDayoffList();
   }
 
-  /** 希望休リストを画面に描画する関数 */
   function renderDayoffList() {
+    if (!dayoffList) return;
     dayoffList.innerHTML = '';
+
     state.dayoffs.forEach(dayoff => {
       const li = document.createElement('li');
-      li.textContent = `${dayoff.staff} - ${dayoff.date}`;
+      const staff = findStaffById(dayoff.staffId);
+      const staffName = staff ? staff.name : '不明なスタッフ';
+      li.textContent = `${staffName} - ${dayoff.date}`;
       dayoffList.appendChild(li);
     });
   }
 
-  /** 年の選択肢を作成する関数 */
   function populateYears() {
+    if (!yearSelect) return;
     const currentYear = new Date().getFullYear();
     for (let i = -1; i <= 2; i++) {
       const year = currentYear + i;
@@ -89,8 +161,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  /** 月の選択肢を作成する関数 */
   function populateMonths() {
+    if (!monthSelect) return;
     const currentMonth = new Date().getMonth() + 1;
     for (let month = 1; month <= 12; month++) {
       const option = document.createElement('option');
@@ -100,13 +172,13 @@ document.addEventListener('DOMContentLoaded', function () {
       monthSelect.appendChild(option);
     }
   }
-  
-  /** 結果表のヘッダーを作成する関数 */
+
   function renderHeader() {
     const resultTable = document.querySelector('#result-area table');
-    if(!resultTable) return;
-    resultTable.innerHTML = ''; 
+    if (!resultTable) return;
+    resultTable.innerHTML = '';
 
+    if (!yearSelect || !monthSelect) return;
     const year = parseInt(yearSelect.value, 10);
     const month = parseInt(monthSelect.value, 10);
     if (!year || !month) return;
@@ -135,56 +207,194 @@ document.addEventListener('DOMContentLoaded', function () {
     thead.appendChild(headerRow);
     thead.appendChild(weekdayRow);
     resultTable.appendChild(thead);
-    
+
     const tbody = document.createElement('tbody');
     tbody.id = 'result-body';
     resultTable.appendChild(tbody);
   }
 
-  /** ★★★ メインのシフト生成ロジック ★★★ */
   function generateShift() {
     const tableBody = document.getElementById('result-body');
-    if (!tableBody) return;
+    if (!tableBody || !yearSelect || !monthSelect) return;
     tableBody.innerHTML = '';
 
     const year = parseInt(yearSelect.value, 10);
     const month = parseInt(monthSelect.value, 10);
     if (!year || !month) return;
-    
+
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    state.staff.forEach(staffName => {
+    const scheduleCells = new Map();
+
+    state.staff.forEach(staffObject => {
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
-      nameCell.textContent = staffName;
+      nameCell.textContent = staffObject.name;
       row.appendChild(nameCell);
+
+      const cellMap = new Map();
 
       for (let day = 1; day <= daysInMonth; day++) {
         const cell = document.createElement('td');
-        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const isDayOff = state.dayoffs.some(d => d.staff === staffName && d.date === dateStr);
-        
-        if (isDayOff) {
-          cell.textContent = '休み';
-          cell.style.backgroundColor = '#ffdcdc';
-        } else {
-          // MVPでは、希望休以外は単純に空白にしておきます
-          cell.textContent = ''; 
-        }
+        const dateStr = formatDate(year, month, day);
+        cell.dataset.date = dateStr;
+        resetCell(cell);
         row.appendChild(cell);
+        cellMap.set(dateStr, cell);
       }
+
+      scheduleCells.set(staffObject.id, cellMap);
       tableBody.appendChild(row);
+    });
+
+    state.staff.forEach(staffObject => {
+      const cellMap = scheduleCells.get(staffObject.id);
+      if (!cellMap) return;
+
+      for (let day = 1; day <= daysInMonth; day++) {
+        const weekdayIndex = new Date(year, month - 1, day).getDay();
+        const weekdayKey = getWeekdayKeyFromIndex(weekdayIndex);
+        if (!weekdayKey || !staffObject.fixedHolidays.includes(weekdayKey)) continue;
+
+        const dateStr = formatDate(year, month, day);
+        const cell = cellMap.get(dateStr);
+        markCellAsDayOff(cell);
+      }
+    });
+
+    state.dayoffs.forEach(dayoff => {
+      const staffObject = findStaffById(dayoff.staffId);
+      if (!staffObject) return;
+
+      const dateParts = dayoff.date.split('-').map(Number);
+      if (dateParts.length < 3 || dateParts.some(Number.isNaN)) return;
+      const [offYear, offMonth] = dateParts;
+      if (offYear !== year || offMonth !== month) return;
+
+      const cellMap = scheduleCells.get(staffObject.id);
+      if (!cellMap) return;
+
+      const cell = cellMap.get(dayoff.date);
+      markCellAsDayOff(cell);
     });
   }
 
-  // --- 4. 初期化とイベント設定 ---
+  function populateShiftCheckboxes(staff) {
+    if (!modalShifts) return;
+    modalShifts.innerHTML = '';
+
+    SHIFT_PATTERNS.forEach(pattern => {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.name = 'modal-shift';
+      checkbox.value = pattern;
+      checkbox.checked = staff.availableShifts.includes(pattern);
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(` ${pattern}`));
+      modalShifts.appendChild(label);
+    });
+  }
+
+  function populateWeekdayCheckboxes(staff) {
+    if (!modalWeekdays) return;
+    const inputs = modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]');
+    inputs.forEach(input => {
+      input.checked = staff.fixedHolidays.includes(input.value);
+    });
+  }
+
+  function openStaffModal(staffId) {
+    if (!staffModal) return;
+    const staff = findStaffById(staffId);
+    if (!staff) return;
+
+    state.editingStaffId = staffId;
+    if (modalTitle) {
+      modalTitle.textContent = `${staff.name}の詳細設定`;
+    }
+
+    populateShiftCheckboxes(staff);
+    populateWeekdayCheckboxes(staff);
+    if (modalMaxDays) {
+      modalMaxDays.value = staff.maxWorkingDays != null ? staff.maxWorkingDays : '';
+    }
+
+    staffModal.style.display = 'flex';
+  }
+
+  function closeStaffModal() {
+    if (!staffModal) return;
+    staffModal.style.display = 'none';
+    state.editingStaffId = null;
+    if (modalForm) {
+      modalForm.reset();
+    }
+    if (modalShifts) {
+      modalShifts.innerHTML = '';
+    }
+  }
+
+  function handleStaffListClick(event) {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const editButton = target.closest('.edit-btn');
+    if (!editButton) return;
+    const staffId = editButton.getAttribute('data-staff-id');
+    if (staffId) {
+      openStaffModal(staffId);
+    }
+  }
+
+  function handleModalSave(event) {
+    event.preventDefault();
+    if (!state.editingStaffId) return;
+    const staff = findStaffById(state.editingStaffId);
+    if (!staff) return;
+
+    if (modalShifts) {
+      const selectedShifts = Array.from(modalShifts.querySelectorAll('input[type="checkbox"][name="modal-shift"]'))
+        .filter(input => input.checked)
+        .map(input => input.value);
+      staff.availableShifts = selectedShifts.length ? selectedShifts : [];
+    }
+
+    if (modalWeekdays) {
+      const selectedWeekdays = Array.from(
+        modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]')
+      )
+        .filter(input => input.checked)
+        .map(input => input.value);
+      staff.fixedHolidays = Array.from(new Set(selectedWeekdays));
+    }
+
+    if (modalMaxDays) {
+      const maxDaysRaw = modalMaxDays.value.trim();
+      staff.maxWorkingDays = maxDaysRaw === '' ? null : Number(maxDaysRaw);
+    }
+
+    renderStaffList();
+    renderDayoffList();
+    closeStaffModal();
+  }
+
+  if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
+  if (staffList) staffList.addEventListener('click', handleStaffListClick);
+  if (addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
+  if (yearSelect) yearSelect.addEventListener('change', renderHeader);
+  if (monthSelect) monthSelect.addEventListener('change', renderHeader);
+  if (generateButton) generateButton.addEventListener('click', generateShift);
+  if (modalSaveBtn) modalSaveBtn.addEventListener('click', handleModalSave);
+  if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeStaffModal);
+  if (staffModal) {
+    staffModal.addEventListener('click', event => {
+      if (event.target === staffModal) {
+        closeStaffModal();
+      }
+    });
+  }
+
   populateYears();
   populateMonths();
   renderHeader();
-
-  if(addStaffButton) addStaffButton.addEventListener('click', addStaff);
-  if(addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
-  if(yearSelect) yearSelect.addEventListener('change', renderHeader);
-  if(monthSelect) monthSelect.addEventListener('change', renderHeader);
-  if(generateButton) generateButton.addEventListener('click', generateShift);
 });
