@@ -478,6 +478,37 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!matchesStaffByName && !matchesStaffById) return false;
       return dayoff.date === dateStr;
     });
+
+    // Apply fixed holidays first.
+    staffCellRecords.forEach(({ staffObject, cells }) => {
+      const fixedHolidays = normalizeFixedHolidays(staffObject);
+      if (!fixedHolidays.length) return;
+      cells.forEach(({ cell, dayOfWeek }) => {
+        if (fixedHolidays.includes(String(dayOfWeek))) {
+          cell.textContent = '休み';
+          cell.style.backgroundColor = '#ffdcdc';
+        }
+      });
+    });
+
+    // Apply requested day-offs afterwards to overwrite as needed.
+    staffCellRecords.forEach(({ staffObject, cells }) => {
+      cells.forEach(({ cell, dateStr }) => {
+        if (isDayOff(staffObject, dateStr)) {
+          cell.textContent = '休み';
+          cell.style.backgroundColor = '#ffdcdc';
+        }
+      });
+    });
+  }
+
+  function isDayOff(staffObject, dateStr) {
+    return state.dayoffs.some(dayoff => {
+      const matchesStaffByName = dayoff.staffName && dayoff.staffName === staffObject.name;
+      const matchesStaffById = !dayoff.staffName && dayoff.staffId && dayoff.staffId === staffObject.id;
+      if (!matchesStaffByName && !matchesStaffById) return false;
+      return dayoff.date === dateStr;
+    });
   }
 
   function populateShiftCheckboxes(staff) {
