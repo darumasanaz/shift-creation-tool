@@ -3,6 +3,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const SHIFT_PATTERNS = ['早番', '日勤A', '日勤B', '遅番', '夜勤', '明け', '休み'];
   const WEEKDAY_INDEX_TO_KEY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const WEEKDAY_KEY_TO_INDEX = WEEKDAY_INDEX_TO_KEY.reduce((acc, key, index) => {
+    acc[key] = index;
+    return acc;
+  }, {});
 
   const staffNameInput = document.getElementById('staff-name');
   const addStaffButton = document.getElementById('add-staff-button');
@@ -51,8 +55,38 @@ document.addEventListener('DOMContentLoaded', function () {
     return state.staff.find(staff => staff.id === staffId) || null;
   }
 
-  function getWeekdayKeyFromIndex(index) {
-    return WEEKDAY_INDEX_TO_KEY[index] || null;
+  function getWeekdayIndexFromKey(key) {
+    return Object.prototype.hasOwnProperty.call(WEEKDAY_KEY_TO_INDEX, key)
+      ? WEEKDAY_KEY_TO_INDEX[key]
+      : null;
+  }
+
+  function normalizeFixedHolidays(staff) {
+    if (!staff || !Array.isArray(staff.fixedHolidays)) {
+      if (staff) staff.fixedHolidays = [];
+      return;
+    }
+
+    const normalized = staff.fixedHolidays
+      .map(value => {
+        if (typeof value === 'number' && value >= 0 && value <= 6) {
+          return value;
+        }
+        if (typeof value === 'string') {
+          const numeric = Number(value);
+          if (!Number.isNaN(numeric) && numeric >= 0 && numeric <= 6) {
+            return numeric;
+          }
+          const indexFromKey = getWeekdayIndexFromKey(value);
+          if (indexFromKey != null) {
+            return indexFromKey;
+          }
+        }
+        return null;
+      })
+      .filter(value => value != null);
+
+    staff.fixedHolidays = Array.from(new Set(normalized));
   }
 
   function formatDate(year, month, day) {
@@ -95,6 +129,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     state.staff.forEach(staff => {
+      normalizeFixedHolidays(staff);
       if (staffList) {
         const li = document.createElement('li');
         const nameSpan = document.createElement('span');
@@ -227,6 +262,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const scheduleCells = new Map();
 
     state.staff.forEach(staffObject => {
+      normalizeFixedHolidays(staffObject);
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
       nameCell.textContent = staffObject.name;
@@ -248,13 +284,13 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     state.staff.forEach(staffObject => {
+      normalizeFixedHolidays(staffObject);
       const cellMap = scheduleCells.get(staffObject.id);
       if (!cellMap) return;
 
       for (let day = 1; day <= daysInMonth; day++) {
         const weekdayIndex = new Date(year, month - 1, day).getDay();
-        const weekdayKey = getWeekdayKeyFromIndex(weekdayIndex);
-        if (!weekdayKey || !staffObject.fixedHolidays.includes(weekdayKey)) continue;
+        if (!staffObject.fixedHolidays.includes(weekdayIndex)) continue;
 
         const dateStr = formatDate(year, month, day);
         const cell = cellMap.get(dateStr);
@@ -300,7 +336,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!modalWeekdays) return;
     const inputs = modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]');
     inputs.forEach(input => {
-      input.checked = staff.fixedHolidays.includes(input.value);
+      const weekdayIndex = getWeekdayIndexFromKey(input.value);
+      input.checked = weekdayIndex != null && staff.fixedHolidays.includes(weekdayIndex);
     });
   }
 
@@ -308,6 +345,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!staffModal) return;
     const staff = findStaffById(staffId);
     if (!staff) return;
+    normalizeFixedHolidays(staff);
 
     state.editingStaffId = staffId;
     if (modalTitle) {
@@ -351,6 +389,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!state.editingStaffId) return;
     const staff = findStaffById(state.editingStaffId);
     if (!staff) return;
+    normalizeFixedHolidays(staff);
 
     if (modalShifts) {
       const selectedShifts = Array.from(modalShifts.querySelectorAll('input[type="checkbox"][name="modal-shift"]'))
@@ -364,8 +403,10 @@ document.addEventListener('DOMContentLoaded', function () {
         modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]')
       )
         .filter(input => input.checked)
-        .map(input => input.value);
+        .map(input => getWeekdayIndexFromKey(input.value))
+        .filter(index => index != null);
       staff.fixedHolidays = Array.from(new Set(selectedWeekdays));
+      normalizeFixedHolidays(staff);
     }
 
     if (modalMaxDays) {
