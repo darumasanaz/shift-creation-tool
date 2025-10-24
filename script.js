@@ -2,7 +2,11 @@ document.addEventListener('DOMContentLoaded', function () {
   'use strict';
 
   const SHIFT_PATTERNS = ['早番', '日勤A', '日勤B', '遅番', '夜勤', '明け', '休み'];
-  const WEEKDAY_VALUES = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const WEEKDAY_KEY_TO_INDEX = WEEKDAY_KEYS.reduce((map, key, index) => {
+    map[key] = index;
+    return map;
+  }, {});
 
   const staffNameInput = document.getElementById('staff-name');
   const addStaffButton = document.getElementById('add-staff-button');
@@ -53,12 +57,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function formatDate(year, month, day) {
     return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  }
-
-  const WEEKDAY_INDEX_TO_VALUE = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-
-  function getWeekdayValueByIndex(index) {
-    return WEEKDAY_INDEX_TO_VALUE[index] || null;
   }
 
   function markCellAsDayOff(cell) {
@@ -133,7 +131,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const isDuplicate = state.dayoffs.some(dayoff => dayoff.staffId === staffId && dayoff.date === date);
     if (isDuplicate) return;
 
-    state.dayoffs.push({ staffId, date });
+    const staff = findStaffById(staffId);
+    state.dayoffs.push({ staffId, staff: staff ? staff.name : undefined, date });
     renderDayoffList();
   }
 
@@ -143,8 +142,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     state.dayoffs.forEach(dayoff => {
       const li = document.createElement('li');
-      const staff = findStaffById(dayoff.staffId);
-      const staffName = staff ? staff.name : '不明なスタッフ';
+      const staff = dayoff.staffId
+        ? findStaffById(dayoff.staffId)
+        : state.staff.find(staffEntry => staffEntry.name === dayoff.staff);
+      const staffName = staff ? staff.name : dayoff.staff || '不明なスタッフ';
       li.textContent = `${staffName} - ${dayoff.date}`;
       dayoffList.appendChild(li);
     });
@@ -228,10 +229,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const scheduleCells = new Map();
 
-    state.staff.forEach(staff => {
+    state.staff.forEach(staffObject => {
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
-      nameCell.textContent = staff.name;
+      nameCell.textContent = staffObject.name;
       row.appendChild(nameCell);
 
       const cellMap = new Map();
@@ -245,18 +246,17 @@ document.addEventListener('DOMContentLoaded', function () {
         cellMap.set(dateStr, cell);
       }
 
-      scheduleCells.set(staff.id, cellMap);
+      scheduleCells.set(staffObject.id, cellMap);
       tableBody.appendChild(row);
     });
 
-    state.staff.forEach(staff => {
-      const cellMap = scheduleCells.get(staff.id);
+    state.staff.forEach(staffObject => {
+      const cellMap = scheduleCells.get(staffObject.id);
       if (!cellMap) return;
 
       for (let day = 1; day <= daysInMonth; day++) {
-        const weekdayValue = getWeekdayValueByIndex(new Date(year, month - 1, day).getDay());
-        if (!weekdayValue) continue;
-        if (!staff.fixedHolidays.includes(weekdayValue)) continue;
+        const weekdayIndex = new Date(year, month - 1, day).getDay();
+        if (!staffObject.fixedHolidays.includes(weekdayIndex)) continue;
 
         const dateStr = formatDate(year, month, day);
         const cell = cellMap.get(dateStr);
@@ -265,15 +265,17 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     state.dayoffs.forEach(dayoff => {
-      const staff = findStaffById(dayoff.staffId);
-      if (!staff) return;
+      const staffObject = dayoff.staffId
+        ? findStaffById(dayoff.staffId)
+        : state.staff.find(staffEntry => staffEntry.name === dayoff.staff);
+      if (!staffObject) return;
 
       const dateParts = dayoff.date.split('-').map(Number);
       if (dateParts.length < 3 || dateParts.some(Number.isNaN)) return;
       const [offYear, offMonth] = dateParts;
       if (offYear !== year || offMonth !== month) return;
 
-      const cellMap = scheduleCells.get(staff.id);
+      const cellMap = scheduleCells.get(staffObject.id);
       if (!cellMap) return;
 
       const cell = cellMap.get(dayoff.date);
@@ -302,7 +304,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!modalWeekdays) return;
     const inputs = modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]');
     inputs.forEach(input => {
-      input.checked = staff.fixedHolidays.includes(input.value);
+      const weekdayIndex = WEEKDAY_KEY_TO_INDEX[input.value];
+      input.checked = typeof weekdayIndex === 'number' && staff.fixedHolidays.includes(weekdayIndex);
     });
   }
 
@@ -362,10 +365,13 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     if (modalWeekdays) {
-      const selectedWeekdays = Array.from(modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]'))
+      const selectedWeekdayIndexes = Array.from(
+        modalWeekdays.querySelectorAll('input[type="checkbox"][name="modal-weekday"]')
+      )
         .filter(input => input.checked)
-        .map(input => input.value);
-      staff.fixedHolidays = selectedWeekdays.filter(value => WEEKDAY_VALUES.includes(value));
+        .map(input => WEEKDAY_KEY_TO_INDEX[input.value])
+        .filter(index => typeof index === 'number');
+      staff.fixedHolidays = Array.from(new Set(selectedWeekdayIndexes)).sort((a, b) => a - b);
     }
 
     if (modalMaxDays) {
