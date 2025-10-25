@@ -978,6 +978,13 @@ document.addEventListener('DOMContentLoaded', function () {
   }
   renderHeader();
 
+  loadState();
+  const targetChanged = setNextMonthTarget();
+  if (targetChanged) {
+    saveState();
+  }
+  renderHeader();
+
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
   if (addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
