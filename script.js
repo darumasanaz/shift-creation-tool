@@ -536,7 +536,7 @@ document.addEventListener('DOMContentLoaded', function () {
     return true;
   }
 
-  function findBestAssignment(availableRecords, deficitMap) {
+  function findBestAssignment(availableRecords, deficitMap, dayIndex) {
     if (!Array.isArray(availableRecords) || !availableRecords.length) {
       return null;
     }
@@ -583,6 +583,23 @@ document.addEventListener('DOMContentLoaded', function () {
           const canWorkNight = available.some(name => NIGHT_SHIFTS.includes(name));
           if (!canWorkNight) {
             score += 30;
+          }
+        }
+
+        if (typeof dayIndex === 'number' && dayIndex > 0 && Array.isArray(record.cells)) {
+          const prevCell = record.cells[dayIndex - 1];
+          const prevAssignment = prevCell ? prevCell.assignment : '';
+          const yesterdayOff = prevAssignment === '休み';
+          if (yesterdayOff) {
+            score += 10;
+            if (dayIndex > 1) {
+              const twoDaysAgoCell = record.cells[dayIndex - 2];
+              const twoDaysAgoAssignment = twoDaysAgoCell ? twoDaysAgoCell.assignment : '';
+              const twoDayRest = twoDaysAgoAssignment === '休み';
+              if (twoDayRest) {
+                score += 20;
+              }
+            }
           }
         }
 
@@ -782,7 +799,7 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const bestMove = findBestAssignment(availableRecords, deficitMap);
+        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex);
         if (!bestMove) {
           break;
         }
