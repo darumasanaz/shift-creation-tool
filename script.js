@@ -78,6 +78,68 @@ document.addEventListener('DOMContentLoaded', function () {
     editingStaffId: null,
   };
 
+  function saveState() {
+    try {
+      localStorage.setItem('shiftToolState', JSON.stringify(state));
+    } catch (error) {
+      console.error('Failed to save shift tool state:', error);
+    }
+  }
+
+  function loadState() {
+    try {
+      const stored = localStorage.getItem('shiftToolState');
+      if (!stored) {
+        renderStaffList();
+        renderDayoffList();
+        return;
+      }
+
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed === 'object') {
+        if (Array.isArray(parsed.staff)) {
+          state.staff = parsed.staff.map(item => {
+            const available = Array.isArray(item.availableShifts)
+              ? item.availableShifts.filter(shift => SHIFT_PATTERNS.includes(shift))
+              : [...SHIFT_PATTERNS];
+            const fixedHolidays = Array.isArray(item.fixedHolidays)
+              ? item.fixedHolidays.map(value => String(value))
+              : [];
+            let maxWorkingDays = null;
+            if (item.maxWorkingDays === null) {
+              maxWorkingDays = null;
+            } else if (typeof item.maxWorkingDays === 'number' && !Number.isNaN(item.maxWorkingDays)) {
+              maxWorkingDays = item.maxWorkingDays;
+            }
+
+            return {
+              id: item.id || generateStaffId(),
+              name: typeof item.name === 'string' ? item.name : '',
+              availableShifts: available,
+              fixedHolidays,
+              maxWorkingDays,
+            };
+          });
+        }
+
+        if (Array.isArray(parsed.dayoffs)) {
+          state.dayoffs = parsed.dayoffs
+            .map(dayoff => ({
+              staffId: dayoff.staffId || null,
+              staffName: dayoff.staffName || null,
+              date: dayoff.date,
+            }))
+            .filter(dayoff => typeof dayoff.date === 'string');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load shift tool state:', error);
+    }
+
+    renderStaffList();
+    renderDayoffList();
+  }
+
   function generateStaffId() {
     return `staff-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
@@ -105,6 +167,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (staffNameInput) {
       staffNameInput.value = '';
     }
+
+    saveState();
   }
 
   function renderStaffList() {
@@ -161,6 +225,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     state.dayoffs.push({ staffId, staffName, date });
     renderDayoffList();
+
+    saveState();
   }
 
   function renderDayoffList() {
@@ -615,7 +681,11 @@ document.addEventListener('DOMContentLoaded', function () {
     renderStaffList();
     renderDayoffList();
     closeStaffModal();
+
+    saveState();
   }
+
+  loadState();
 
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
