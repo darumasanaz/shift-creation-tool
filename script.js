@@ -357,39 +357,35 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function exportToCSV() {
     const resultTable = document.querySelector('#result-area table');
-    if (!resultTable || !csvOutput) return;
+    const csvOutput = document.getElementById('csv-output');
 
-    const thead = resultTable.querySelector('thead');
-    const tbody = resultTable.querySelector('tbody');
-    if (!thead || !tbody) return;
+    if (!resultTable || !csvOutput) {
+      console.error('CSV出力に必要な要素が見つかりません。');
+      return;
+    }
 
-    const headerRow = thead.querySelector('tr');
-    if (!headerRow) return;
+    let csvString = '';
+    const rows = [];
 
-    const headerCells = Array.from(headerRow.querySelectorAll('th'));
-    if (!headerCells.length) return;
+    const headerRow = resultTable.querySelector('thead tr:first-child');
+    if (headerRow) {
+      const headers = Array.from(headerRow.querySelectorAll('th')).map(th => `"${th.textContent.trim()}"`);
+      rows.push(headers.join(','));
+    }
 
-    const headerValues = [''];
-    headerCells.slice(1).forEach(cell => {
-      headerValues.push((cell.textContent || '').trim());
+    const dataRows = resultTable.querySelectorAll('tbody tr');
+    dataRows.forEach(row => {
+      const cols = Array.from(row.querySelectorAll('td')).map(td => `"${td.textContent.trim()}"`);
+      rows.push(cols.join(','));
     });
 
-    const csvLines = [headerValues.join(',')];
+    csvString = rows.join('\n');
 
-    const bodyRows = Array.from(tbody.querySelectorAll('tr'));
-    bodyRows.forEach(row => {
-      const cells = Array.from(row.querySelectorAll('td'));
-      if (!cells.length) return;
-
-      const values = cells.map(cell => (cell.textContent || '').trim());
-      csvLines.push(values.join(','));
-    });
-
-    const csvText = csvLines.join('\n');
-    csvOutput.value = csvText;
+    csvOutput.value = csvString;
     csvOutput.style.display = 'block';
-    csvOutput.focus();
     csvOutput.select();
+    document.execCommand('copy');
+    alert('CSVデータをクリップボードにコピーしました！');
   }
 
   function normalizeFixedHolidays(staffObject) {
@@ -970,13 +966,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     saveState();
   }
-
-  loadState();
-  const targetChanged = setNextMonthTarget();
-  if (targetChanged) {
-    saveState();
-  }
-  renderHeader();
 
   loadState();
   const targetChanged = setNextMonthTarget();
