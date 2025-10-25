@@ -380,22 +380,77 @@ document.addEventListener('DOMContentLoaded', function () {
     return 'bathDay';
   }
 
-  function buildHourlyNeeds(dayType) {
-    const hourlyTemplate = HOURLY_NEEDS[dayType];
-    const hourlyNeeds = new Array(24).fill(0);
-    if (!hourlyTemplate) return hourlyNeeds;
+  function createHourlyNeedsMap(dayType) {
+    const map = new Array(24).fill(0);
+    const hourlyTemplate = HOURLY_NEEDS ? HOURLY_NEEDS[dayType] : null;
+    if (!hourlyTemplate) {
+      return map;
+    }
 
-    Object.entries(hourlyTemplate).forEach(([range, count]) => {
+    Object.entries(hourlyTemplate).forEach(([range, rawCount]) => {
       const [startStr, endStr] = range.split('-');
-      const start = parseInt(startStr, 10);
-      const end = parseInt(endStr, 10);
-      if (Number.isNaN(start) || Number.isNaN(end)) return;
-      for (let hour = start; hour < end; hour++) {
-        hourlyNeeds[hour % 24] = count;
+      const start = Number(startStr);
+      const end = Number(endStr);
+      const count = Number(rawCount);
+
+      if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(count)) {
+        return;
+      }
+
+      const normalizedEnd = end > start ? end : end + 24;
+      for (let hour = start; hour < normalizedEnd; hour++) {
+        map[hour % 24] = count;
       }
     });
 
-    return hourlyNeeds;
+    return map;
+  }
+
+  function createHourlySupplyMap(assignedShifts) {
+    const map = new Array(24).fill(0);
+    if (!Array.isArray(assignedShifts) || !assignedShifts.length) {
+      return map;
+    }
+
+    assignedShifts.forEach(entry => {
+      if (!entry) return;
+
+      let shiftDefinition = entry.shift;
+      if (typeof shiftDefinition === 'string') {
+        shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === shiftDefinition) || null;
+      }
+
+      if (!shiftDefinition || typeof shiftDefinition.start !== 'number' || typeof shiftDefinition.end !== 'number') {
+        return;
+      }
+
+      const start = shiftDefinition.start;
+      const end = shiftDefinition.end;
+      const normalizedEnd = end > start ? end : end + 24;
+
+      for (let hour = start; hour < normalizedEnd; hour++) {
+        const index = hour % 24;
+        map[index] = (map[index] || 0) + 1;
+      }
+    });
+
+    return map;
+  }
+
+  function calculateDeficitMap(needsMap, supplyMap) {
+    const deficit = new Array(24).fill(0);
+    for (let hour = 0; hour < 24; hour++) {
+      const need = Array.isArray(needsMap) ? needsMap[hour] : needsMap ? needsMap[hour] : undefined;
+      const supply = Array.isArray(supplyMap) ? supplyMap[hour] : supplyMap ? supplyMap[hour] : undefined;
+      const needValue = Number.isFinite(need) ? need : 0;
+      const supplyValue = Number.isFinite(supply) ? supply : 0;
+      deficit[hour] = needValue - supplyValue;
+    }
+    return deficit;
+  }
+
+  function buildHourlyNeeds(dayType) {
+    return createHourlyNeedsMap(dayType);
   }
 
   function computeShiftRequirements(dayType) {
