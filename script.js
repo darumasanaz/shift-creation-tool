@@ -47,13 +47,27 @@ document.addEventListener('DOMContentLoaded', function () {
   };
   const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
   const EVENING_HOURS = [18, 19, 20];
-  const DAY_NEED_WEIGHT = 10;
+  const WEIGHT_DAYB_CORE = 10;
+  const WEIGHT_LATE_CORE = 12;
+  const WEIGHT_DAY_DEFICIT = 8;
+  const WEIGHT_DAYB_DEFICIT = 10;
+  const PENALTY_GEN_NIGHTS = 8;
   const DAY_OVERSUP_ALLOW = 1;
-  const DAY_OVERSUP_PENALTY = 4;
+  const DAY_OVERSUP_PENALTY = 5;
+  const GENERALIST_NIGHT_THRESHOLD = 6;
+  const NIGHT_SPECIALIST_BONUS = 6;
+  const GENERALIST_NIGHT_ROLE_PENALTY = 4;
   const NIGHT_PRIORITY_ORDER = ['夜勤C', '夜勤B', '夜勤A'];
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
+  const ROLE_CATEGORIES = {
+    nightSpecialist: 'night-specialist',
+    daybCore: 'dayb-core',
+    lateCore: 'late-core',
+    generalist: 'generalist',
+    dayOnly: 'day-only',
+  };
   const WEEKDAY_INDEX_MAP = {
     sun: '0',
     mon: '1',
@@ -468,6 +482,48 @@ document.addEventListener('DOMContentLoaded', function () {
     return DAYTIME_NEEDS_CACHE.get(dayType);
   }
 
+  function inferRoleCategory(staff) {
+    if (!staff) {
+      return ROLE_CATEGORIES.dayOnly;
+    }
+
+    const available = Array.isArray(staff.availableShifts)
+      ? staff.availableShifts.filter(shift => SHIFT_PATTERNS.includes(shift))
+      : [];
+    if (!available.length) {
+      return ROLE_CATEGORIES.dayOnly;
+    }
+
+    const dayShifts = available.filter(name => DAYTIME_SHIFTS.includes(name));
+    const nightShifts = available.filter(name => NIGHT_SHIFTS.includes(name));
+
+    if (dayShifts.length === 0 && nightShifts.length > 0) {
+      return ROLE_CATEGORIES.nightSpecialist;
+    }
+
+    const lateCount = dayShifts.filter(name => name === '遅番').length;
+    if (lateCount > 0) {
+      const dayOnlyLate = dayShifts.length === lateCount;
+      const lateDominant = lateCount >= Math.max(1, dayShifts.length - 1);
+      if ((dayOnlyLate || lateDominant) && nightShifts.length <= 1) {
+        return ROLE_CATEGORIES.lateCore;
+      }
+    }
+
+    if (dayShifts.includes('日勤B')) {
+      const strictMonthlyCap = isFiniteNumber(staff.maxWorkingDays) && staff.maxWorkingDays <= 10;
+      if (nightShifts.length === 0 || strictMonthlyCap) {
+        return ROLE_CATEGORIES.daybCore;
+      }
+    }
+
+    if (dayShifts.length > 0 && nightShifts.length > 0) {
+      return ROLE_CATEGORIES.generalist;
+    }
+
+    return ROLE_CATEGORIES.dayOnly;
+  }
+
   function getMinMaxForHour(dayType, hour, isNextMorning = false) {
     if (hour == null) {
       return { min: 0, max: Number.POSITIVE_INFINITY };
@@ -546,6 +602,11 @@ document.addEventListener('DOMContentLoaded', function () {
       const isNextMorning = hour >= 24;
       const hourDayType = isNextMorning ? nextDayType : dayType;
       const { min, max } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
+      const isNightWindow =
+        (normalizedHour >= 18 && normalizedHour <= 23) || (isNextMorning && normalizedHour >= 0 && normalizedHour <= 6);
+      if (!isNightWindow) {
+        continue;
+      }
       const current = supplyMap ? supplyMap[normalizedHour] || 0 : 0;
       const after = current + 1;
 
@@ -672,6 +733,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function validateSchedule(staffRecords, daysInMonth, year, month) {
     let daytimeShortageSlots = 0;
     let daytimeOversupplySlots = 0;
+    let daytimeOversupplyHours = 0;
     let nightViolations = 0;
 
     for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
@@ -749,12 +811,19 @@ document.addEventListener('DOMContentLoaded', function () {
             actual: value,
           });
           daytimeOversupplySlots += value - allowed;
+          daytimeOversupplyHours += 1;
         }
       }
 
       if (issues.length) {
         console.warn(`Coverage issues on day ${dayIndex + 1}:`, issues);
       }
+    }
+
+    if (daytimeOversupplyHours > 0) {
+      console.warn(
+        `Daytime oversupply hours beyond need + ${DAY_OVERSUP_ALLOW}: ${daytimeOversupplyHours}`
+      );
     }
 
     console.info(
@@ -956,6 +1025,9 @@ document.addEventListener('DOMContentLoaded', function () {
         : [];
       if (!available.length) return;
 
+      const roleCategory = record.roleCategory || inferRoleCategory(record.staffObject);
+      record.roleCategory = roleCategory;
+
       let candidateShifts = allowedShiftNames
         ? available.filter(name => allowedShiftNames.includes(name))
         : available.slice();
@@ -1019,49 +1091,84 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         let score = 0;
+        let dayDeficitCovered = false;
+        let daybDeficitWeight = 0;
+        let dayOversupplyPenalty = 0;
+        let lateCoreBonus = 0;
+        let nightContribution = 0;
+
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
           const normalizedHour = ((hour % 24) + 24) % 24;
           const isNextMorning = hour >= 24;
           const hourDayType = isNextMorning ? nextDayType : dayType;
-          const { min, max } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
+          const { min } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
           const currentCoverage = currentSupplyMap ? currentSupplyMap[normalizedHour] || 0 : 0;
           const afterCoverage = currentCoverage + 1;
-          const deficit = deficitMap[normalizedHour] || 0;
-          if (deficit > 0) {
-            score += deficit;
-          }
-
-          const isNightStrict = isStrictNightHour(normalizedHour);
-          const isEvening = isEveningHour(normalizedHour);
-
-          if ((isNightStrict || isEvening) && min > 0) {
-            const improvement = Math.min(afterCoverage, min) - currentCoverage;
-            if (improvement > 0) {
-              const weight = isNightStrict ? 50 : 25;
-              score += improvement * weight;
-            }
-          }
-
-          if (!isNextMorning && isEvening && currentCoverage >= min && (!Number.isFinite(max) || currentCoverage < max)) {
-            score += 5;
-          }
-
+          const deficitValue = Math.max(0, deficitMap[normalizedHour] || 0);
           const isDaytimeHour = !isNextMorning && normalizedHour >= 7 && normalizedHour <= 17;
+          const isLateWindow = !isNextMorning && normalizedHour >= 16 && normalizedHour <= 18;
+          const isNightWindow = !isDaytimeHour && (normalizedHour >= 18 || isNextMorning || normalizedHour <= 6);
+
           if (isDaytimeHour) {
             if (currentCoverage < min) {
-              score += DAY_NEED_WEIGHT * (min - currentCoverage);
+              const shortage = min - currentCoverage;
+              dayDeficitCovered = true;
+              score += WEIGHT_DAY_DEFICIT * shortage;
+              if (shiftDefinition.name === '日勤B') {
+                daybDeficitWeight += WEIGHT_DAYB_DEFICIT * shortage;
+              }
             }
+
             const overAmount = afterCoverage - (min + DAY_OVERSUP_ALLOW);
             if (overAmount > 0) {
-              score -= DAY_OVERSUP_PENALTY * overAmount;
+              dayOversupplyPenalty += DAY_OVERSUP_PENALTY * overAmount;
+            }
+
+            if (
+              !lateCoreBonus &&
+              shiftDefinition.name === '遅番' &&
+              roleCategory === ROLE_CATEGORIES.lateCore &&
+              isLateWindow &&
+              deficitValue > 0
+            ) {
+              lateCoreBonus = WEIGHT_LATE_CORE;
+            }
+          } else if (isNightWindow && min > 0) {
+            const improvement = Math.min(afterCoverage, min) - currentCoverage;
+            if (improvement > 0) {
+              const weight = normalizedHour >= 21 || isNextMorning ? 50 : 25;
+              nightContribution += improvement * weight;
+            }
+            if (deficitValue > 0) {
+              nightContribution += deficitValue * 5;
             }
           }
+        }
+
+        score += daybDeficitWeight;
+        score -= dayOversupplyPenalty;
+        score += lateCoreBonus;
+        score += nightContribution;
+
+        if (shiftDefinition.name === '日勤B' && roleCategory === ROLE_CATEGORIES.daybCore && dayDeficitCovered) {
+          score += WEIGHT_DAYB_CORE;
         }
 
         if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
           const priorityIndex = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
           if (priorityIndex !== -1) {
             score += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
+          }
+          if (roleCategory === ROLE_CATEGORIES.nightSpecialist) {
+            score += NIGHT_SPECIALIST_BONUS;
+          } else if (roleCategory === ROLE_CATEGORIES.generalist) {
+            score -= GENERALIST_NIGHT_ROLE_PENALTY;
+            const nightCount = record.nightShiftsAssigned || 0;
+            const projectedNightCount = nightCount + 1;
+            const overNights = Math.max(0, projectedNightCount - GENERALIST_NIGHT_THRESHOLD);
+            if (overNights > 0) {
+              score -= PENALTY_GEN_NIGHTS * overNights;
+            }
           }
         }
 
@@ -1180,6 +1287,8 @@ document.addEventListener('DOMContentLoaded', function () {
         cells,
         workdaysInMonth: 0,
         workdaysInWeek: 0,
+        nightShiftsAssigned: 0,
+        roleCategory: inferRoleCategory(staff),
         targetWorkdays: isFiniteNumber(staff.maxWorkingDays)
           ? staff.maxWorkingDays
           : Math.ceil(daysInMonth * 0.55),
@@ -1261,6 +1370,9 @@ document.addEventListener('DOMContentLoaded', function () {
         assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
         staffRecord.workdaysInMonth += 1;
         staffRecord.workdaysInWeek += 1;
+        if (NIGHT_SHIFTS.includes(shift.name)) {
+          staffRecord.nightShiftsAssigned = (staffRecord.nightShiftsAssigned || 0) + 1;
+        }
 
         assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
@@ -1338,6 +1450,9 @@ document.addEventListener('DOMContentLoaded', function () {
         assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
         staffRecord.workdaysInMonth += 1;
         staffRecord.workdaysInWeek += 1;
+        if (NIGHT_SHIFTS.includes(shift.name)) {
+          staffRecord.nightShiftsAssigned = (staffRecord.nightShiftsAssigned || 0) + 1;
+        }
 
         assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
