@@ -219,6 +219,20 @@ tbody td {
   background-color: #ffffff;
 }
 
+#shortage-panel button {
+  margin-bottom: 1rem;
+}
+
+#shortage-panel .table-wrapper {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+#shortage-table td:last-child {
+  font-weight: 700;
+  color: #b91c1c;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

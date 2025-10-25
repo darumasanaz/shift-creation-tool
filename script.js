@@ -3,10 +3,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function safeRun(fn) {
     try {
-      if (typeof fn === 'function') fn();
+      if (typeof fn === 'function') {
+        return fn();
+      }
     } catch (e) {
       console.warn('[init skipped]', e);
     }
+    return undefined;
   }
 
   window.addEventListener('error', e => {
@@ -638,6 +641,60 @@ document.addEventListener('DOMContentLoaded', function () {
     return deficit;
   }
 
+  function fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth) {
+    const bands = [
+      { hours: [9, 15], allowed: ['日勤A', '日勤B'] },
+      { hours: [7, 9], allowed: ['早番', '日勤A'] },
+      { hours: [16, 18], allowed: ['日勤A', '遅番'] },
+    ];
+    let assigned = collectAssignmentsForDay(staffRecords, dayIndex);
+    let supply = createHourlySupplyMap(assigned);
+    const needsMap = createHourlyNeedsMap(dayType);
+
+    for (const band of bands) {
+      while (true) {
+        const deficit = calculateDeficitMap(needsMap, supply);
+        const [a, b] = band.hours;
+        const hasDef = deficit.slice(a, b).some(value => value > 0);
+        if (!hasDef) {
+          break;
+        }
+
+        const avail = collectEligibleRecords(staffRecords, dayIndex, band.allowed);
+        if (!avail.length) {
+          break;
+        }
+
+        const best = findBestAssignment(
+          avail,
+          deficit,
+          dayIndex,
+          band.allowed,
+          dayType,
+          nextDayType,
+          daysInMonth,
+          supply
+        );
+        if (!best) {
+          break;
+        }
+
+        const { staffRecord, shift } = best;
+        if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
+          markForcedRest(staffRecord.cells[dayIndex]);
+          continue;
+        }
+
+        assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
+        staffRecord.workdaysInMonth += 1;
+        staffRecord.workdaysInWeek += 1;
+
+        assigned.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
+        supply = createHourlySupplyMap(assigned);
+      }
+    }
+  }
+
   function buildDailyCoverageMap(staffRecords, dayIndex) {
     const map = new Array(24).fill(0);
     const currentAssignments = collectAssignmentsForDay(staffRecords, dayIndex);
@@ -773,6 +830,91 @@ document.addEventListener('DOMContentLoaded', function () {
     console.info(
       `Daytime shortages (staff-hours): ${daytimeShortageSlots}, oversupply beyond need + ${DAY_OVERSUP_ALLOW} (staff-hours): ${daytimeOversupplySlots}, night coverage warnings: ${nightViolations}`
     );
+
+    return {
+      daytimeShortageSlots,
+      daytimeOversupplySlots,
+      nightViolations,
+    };
+  }
+
+  function computeShortageSummary(staffRecords, daysInMonth, year, month) {
+    const rows = [];
+    for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
+      const coverage = buildDailyCoverageMap(staffRecords, dayIndex);
+      const date = new Date(year, month - 1, dayIndex + 1);
+      const dayType = getDayType(date.getDay());
+      const nextDate = dayIndex + 1 < daysInMonth ? new Date(year, month - 1, dayIndex + 2) : null;
+      const nextDayType = nextDate ? getDayType(nextDate.getDay()) : null;
+
+      const bands = [
+        { name: '7-9', hours: [7, 9] },
+        { name: '9-15', hours: [9, 15] },
+        { name: '16-18', hours: [16, 18] },
+        { name: '18-21', hours: [18, 21] },
+        { name: '21-24', hours: [21, 24] },
+        { name: '0-7', hours: [0, 7], nextMorning: true },
+      ];
+
+      let totalShort = 0;
+      const rec = { day: dayIndex + 1 };
+
+      for (const band of bands) {
+        const [a, b] = band.hours;
+        let short = 0;
+        for (let h = a; h < b; h++) {
+          const hour = (h + 24) % 24;
+          const isNext = band.nextMorning === true;
+          const typ = isNext ? nextDayType : dayType;
+          const { min } = getMinMaxForHour(typ, hour, isNext);
+          const actual = coverage[hour] || 0;
+          if (actual < min) {
+            short += min - actual;
+          }
+        }
+        rec[band.name] = short;
+        totalShort += short;
+      }
+      rec.total = totalShort;
+      rows.push(rec);
+    }
+    return rows;
+  }
+
+  function renderShortageTable(rows) {
+    const tbl = document.getElementById('shortage-table');
+    if (!tbl) return;
+    tbl.innerHTML = '';
+    const thead = document.createElement('thead');
+    thead.innerHTML = `<tr>
+    <th>日</th><th>7-9</th><th>9-15</th><th>16-18</th><th>18-21</th><th>21-24</th><th>0-7</th><th>合計不足</th>
+  </tr>`;
+    tbl.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.day}</td><td>${r['7-9']}</td><td>${r['9-15']}</td><td>${r['16-18']}</td>
+                    <td>${r['18-21']}</td><td>${r['21-24']}</td><td>${r['0-7']}</td><td><b>${r.total}</b></td>`;
+      if (r.total > 0) tr.style.backgroundColor = '#fff5f5';
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+  }
+
+  function exportShortageCSV(rows) {
+    const header = ['日', '7-9', '9-15', '16-18', '18-21', '21-24', '0-7', '合計不足'];
+    const lines = [header.join(',')].concat(
+      rows.map(r =>
+        [r.day, r['7-9'], r['9-15'], r['16-18'], r['18-21'], r['21-24'], r['0-7'], r.total].join(',')
+      )
+    );
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '不足サマリー.csv';
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
@@ -1076,6 +1218,14 @@ document.addEventListener('DOMContentLoaded', function () {
           if (priorityIndex !== -1) {
             score += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
           }
+          const hasDayShifts = (record.staffObject.availableShifts || []).some(name =>
+            DAYTIME_SHIFTS.includes(name)
+          );
+          if (!hasDayShifts) {
+            score += 80;
+          } else {
+            score -= 40;
+          }
         }
 
         const afterMonth = (record.workdaysInMonth || 0) + 1;
@@ -1218,7 +1368,27 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
-    // Phase 2: allocate night shifts first
+    // Phase 2: fill core daytime bands before night allocation
+    resetWorkCounters(staffRecords);
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
+
+      if (dayOfWeek === 0) {
+        staffRecords.forEach(record => {
+          record.workdaysInWeek = 0;
+        });
+      }
+
+      const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
+
+      fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth);
+    }
+
+    // Phase 3: allocate night shifts after daytime coverage
     resetWorkCounters(staffRecords);
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
@@ -1236,6 +1406,12 @@ document.addEventListener('DOMContentLoaded', function () {
       const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
       const needsMap = createHourlyNeedsMap(dayType);
       let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
+
+      assignedShiftsThisDay.forEach(entry => {
+        entry.record.workdaysInMonth += 1;
+        entry.record.workdaysInWeek += 1;
+      });
+
       let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
 
       while (true) {
@@ -1245,7 +1421,17 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const allowedShifts = nightStatus.strictBelowMin ? NIGHT_SHIFTS : ['遅番'];
+        let allowedShifts = null;
+        if (nightStatus.strictBelowMin) {
+          allowedShifts = NIGHT_SHIFTS;
+        } else if (nightStatus.eveningBelowMin) {
+          allowedShifts = ['遅番', '夜勤B', '夜勤A'];
+        }
+
+        if (!allowedShifts) {
+          break;
+        }
+
         const availableRecords = collectEligibleRecords(staffRecords, dayIndex, allowedShifts);
         if (!availableRecords.length) {
           break;
@@ -1282,7 +1468,12 @@ document.addEventListener('DOMContentLoaded', function () {
           const nextIndex = dayIndex + 1;
           if (nextIndex < daysInMonth) {
             const nextCell = staffRecord.cells[nextIndex];
-            if (nextCell && !nextCell.isLocked) {
+            if (nextCell) {
+              if (isWorkingAssignment(nextCell.assignment)) {
+                nextCell.assignment = '';
+                nextCell.backgroundColor = '';
+                nextCell.isLocked = false;
+              }
               markNightShiftRest(nextCell);
             }
           }
@@ -1290,74 +1481,17 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    // Phase 3: cover daytime gaps with remaining capacity
-    resetWorkCounters(staffRecords);
-    for (let day = 1; day <= daysInMonth; day++) {
-      const dayIndex = day - 1;
-      const currentDate = new Date(year, month - 1, day);
-      const dayOfWeek = currentDate.getDay();
-
-      if (dayOfWeek === 0) {
-        staffRecords.forEach(record => {
-          record.workdaysInWeek = 0;
-        });
-      }
-
-      const dayType = getDayType(dayOfWeek);
-      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
-      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
-      const needsMap = createHourlyNeedsMap(dayType);
-      let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
-
-      assignedShiftsThisDay.forEach(entry => {
-        entry.record.workdaysInMonth += 1;
-        entry.record.workdaysInWeek += 1;
-      });
-
-      let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
-
-      while (true) {
-        const deficitMap = calculateDeficitMap(needsMap, supplyMap);
-        const remainingNeeds = deficitMap.some(value => value > 0);
-        if (!remainingNeeds) {
-          break;
-        }
-
-        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, DAYTIME_SHIFTS);
-        if (!availableRecords.length) {
-          break;
-        }
-
-        const bestMove = findBestAssignment(
-          availableRecords,
-          deficitMap,
-          dayIndex,
-          DAYTIME_SHIFTS,
-          dayType,
-          nextDayType,
-          daysInMonth,
-          supplyMap
-        );
-        if (!bestMove) {
-          break;
-        }
-
-        const { staffRecord, shift } = bestMove;
-        if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
-          markForcedRest(staffRecord.cells[dayIndex]);
-          continue;
-        }
-
-        assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
-        staffRecord.workdaysInMonth += 1;
-        staffRecord.workdaysInWeek += 1;
-
-        assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
-        supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
-      }
+    const validation = safeRun(() => validateSchedule(staffRecords, daysInMonth, year, month));
+    if (validation) {
+      console.debug('Validation summary:', validation);
     }
 
-    safeRun(() => validateSchedule(staffRecords, daysInMonth, year, month));
+    const rows = computeShortageSummary(staffRecords, daysInMonth, year, month);
+    renderShortageTable(rows);
+    const shortageBtn = document.getElementById('export-shortage-csv-btn');
+    if (shortageBtn) {
+      shortageBtn.onclick = () => exportShortageCSV(rows);
+    }
 
     // Final rendering: push schedule back to DOM
     staffRecords.forEach(record => {
