@@ -61,6 +61,8 @@ document.addEventListener('DOMContentLoaded', function () {
   const dayoffList = document.getElementById('dayoff-list');
 
   const generateButton = document.getElementById('generate-btn');
+  const exportCsvButton = document.getElementById('export-csv-btn');
+  const csvOutput = document.getElementById('csv-output');
 
   const staffModal = document.getElementById('staff-modal');
   const modalTitle = document.getElementById('modal-title');
@@ -351,6 +353,43 @@ document.addEventListener('DOMContentLoaded', function () {
     const tbody = document.createElement('tbody');
     tbody.id = 'result-body';
     resultTable.appendChild(tbody);
+  }
+
+  function exportToCSV() {
+    const resultTable = document.querySelector('#result-area table');
+    if (!resultTable || !csvOutput) return;
+
+    const thead = resultTable.querySelector('thead');
+    const tbody = resultTable.querySelector('tbody');
+    if (!thead || !tbody) return;
+
+    const headerRow = thead.querySelector('tr');
+    if (!headerRow) return;
+
+    const headerCells = Array.from(headerRow.querySelectorAll('th'));
+    if (!headerCells.length) return;
+
+    const headerValues = [''];
+    headerCells.slice(1).forEach(cell => {
+      headerValues.push((cell.textContent || '').trim());
+    });
+
+    const csvLines = [headerValues.join(',')];
+
+    const bodyRows = Array.from(tbody.querySelectorAll('tr'));
+    bodyRows.forEach(row => {
+      const cells = Array.from(row.querySelectorAll('td'));
+      if (!cells.length) return;
+
+      const values = cells.map(cell => (cell.textContent || '').trim());
+      csvLines.push(values.join(','));
+    });
+
+    const csvText = csvLines.join('\n');
+    csvOutput.value = csvText;
+    csvOutput.style.display = 'block';
+    csvOutput.focus();
+    csvOutput.select();
   }
 
   function normalizeFixedHolidays(staffObject) {
@@ -939,10 +978,18 @@ document.addEventListener('DOMContentLoaded', function () {
   }
   renderHeader();
 
+  loadState();
+  const targetChanged = setNextMonthTarget();
+  if (targetChanged) {
+    saveState();
+  }
+  renderHeader();
+
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
   if (addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
   if (generateButton) generateButton.addEventListener('click', generateShift);
+  if (exportCsvButton) exportCsvButton.addEventListener('click', exportToCSV);
   if (modalSaveBtn) modalSaveBtn.addEventListener('click', handleModalSave);
   if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeStaffModal);
   if (staffModal) {
