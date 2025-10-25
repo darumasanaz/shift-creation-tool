@@ -45,18 +45,20 @@ document.addEventListener('DOMContentLoaded', function () {
     weekRisk: 6,
     streakNearMax: 2,
   };
-  const CAP_MAP = (() => {
-    const caps = new Array(24).fill(Number.POSITIVE_INFINITY);
-    for (let hour = 18; hour < 21; hour++) {
-      caps[hour] = 3;
-    }
-    [21, 22, 23, 0, 1, 2, 3, 4, 5, 6].forEach(hour => {
-      caps[hour] = 2;
+  const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
+  const EVENING_HOURS = [18, 19, 20];
+  const HOUR_BOUNDS = (() => {
+    const bounds = new Array(24)
+      .fill(null)
+      .map(() => ({ min: 0, max: Number.POSITIVE_INFINITY }));
+    EVENING_HOURS.forEach(hour => {
+      bounds[hour] = { min: 2, max: 3 };
     });
-    return caps;
+    NIGHT_STRICT_HOURS.forEach(hour => {
+      bounds[hour] = { min: 2, max: 2 };
+    });
+    return bounds;
   })();
-  const NIGHT_CRITICAL_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
-  const NIGHT_TARGET = 2;
   const NIGHT_PRIORITY_ORDER = ['夜勤C', '夜勤B', '夜勤A'];
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
@@ -494,14 +496,15 @@ document.addEventListener('DOMContentLoaded', function () {
     return map;
   }
 
-  function getCapForHour(hour) {
+  function getBoundsForHour(hour) {
     if (hour == null) {
-      return Number.POSITIVE_INFINITY;
+      return { min: 0, max: Number.POSITIVE_INFINITY };
     }
-    return CAP_MAP[hour % 24] ?? Number.POSITIVE_INFINITY;
+    const normalized = ((hour % 24) + 24) % 24;
+    return HOUR_BOUNDS[normalized] || { min: 0, max: Number.POSITIVE_INFINITY };
   }
 
-  function wouldExceedCap(supplyMap, shiftDefinition) {
+  function wouldExceedBounds(supplyMap, shiftDefinition) {
     if (!Array.isArray(supplyMap) || !shiftDefinition) {
       return false;
     }
@@ -509,10 +512,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const end = shiftDefinition.end;
     const normalizedEnd = end > start ? end : end + 24;
     for (let hour = start; hour < normalizedEnd; hour++) {
-      const cap = getCapForHour(hour);
-      if (Number.isFinite(cap)) {
+      const { max } = getBoundsForHour(hour);
+      if (Number.isFinite(max)) {
         const current = supplyMap[hour % 24] || 0;
-        if (current + 1 > cap) {
+        if (current + 1 > max) {
           return true;
         }
       }
@@ -535,54 +538,82 @@ document.addEventListener('DOMContentLoaded', function () {
     return false;
   }
 
-  function evaluateNightShiftContribution(supplyMap, shiftDefinition) {
-    if (!Array.isArray(supplyMap)) {
-      return 0;
-    }
-    if (!shiftDefinition || !NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+  function isStrictNightHour(hour) {
+    return NIGHT_STRICT_HOURS.includes(hour);
+  }
+
+  function isEveningHour(hour) {
+    return EVENING_HOURS.includes(hour);
+  }
+
+  function evaluateBoundsContribution(supplyMap, shiftDefinition) {
+    if (!Array.isArray(supplyMap) || !shiftDefinition) {
       return 0;
     }
 
     let bonus = 0;
-    NIGHT_CRITICAL_HOURS.forEach(hour => {
-      if (!isHourCoveredByShift(shiftDefinition, hour)) {
-        return;
-      }
-      const before = supplyMap[hour] || 0;
-      if (before >= NIGHT_TARGET) {
-        return;
-      }
-      bonus += (NIGHT_TARGET - before) * 20;
-    });
+    const start = shiftDefinition.start;
+    const end = shiftDefinition.end;
+    const normalizedEnd = end > start ? end : end + 24;
 
-    if (shiftDefinition.name === '夜勤C') {
-      bonus += 10;
-    } else if (shiftDefinition.name === '夜勤A') {
-      bonus -= 15;
+    for (let hour = start; hour < normalizedEnd; hour++) {
+      const normalizedHour = hour % 24;
+      const { min, max } = getBoundsForHour(hour);
+      if (min === 0 && !Number.isFinite(max)) {
+        continue;
+      }
+
+      const before = supplyMap[normalizedHour] || 0;
+      const after = before + 1;
+
+      if (before < min) {
+        const improvement = Math.min(after, min) - before;
+        let weight = 10;
+        if (isStrictNightHour(normalizedHour)) {
+          weight = 50;
+        } else if (isEveningHour(normalizedHour)) {
+          weight = 25;
+        }
+        bonus += improvement * weight;
+      } else if (isEveningHour(normalizedHour) && before >= min && before < max) {
+        bonus += 5;
+      }
+    }
+
+    if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+      const priorityIndex = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
+      if (priorityIndex !== -1) {
+        bonus += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
+      }
     }
 
     return bonus;
   }
 
-  function isNightCoverageSatisfied(supplyMap) {
+  function calculateNightCoverageNeeds(supplyMap) {
+    const status = {
+      strictBelowMin: false,
+      eveningBelowMin: false,
+    };
     if (!Array.isArray(supplyMap)) {
-      return false;
+      return status;
     }
-    return NIGHT_CRITICAL_HOURS.every(hour => {
-      const cap = getCapForHour(hour);
-      const current = supplyMap[hour] || 0;
-      if (Number.isFinite(cap)) {
-        return current >= cap;
-      }
-      return current >= NIGHT_TARGET;
-    });
-  }
 
-  function hasNightCriticalDeficit(deficitMap) {
-    if (!Array.isArray(deficitMap)) {
-      return false;
-    }
-    return NIGHT_CRITICAL_HOURS.some(hour => (deficitMap[hour] || 0) > 0);
+    NIGHT_STRICT_HOURS.forEach(hour => {
+      const { min } = getBoundsForHour(hour);
+      if ((supplyMap[hour] || 0) < min) {
+        status.strictBelowMin = true;
+      }
+    });
+
+    EVENING_HOURS.forEach(hour => {
+      const { min } = getBoundsForHour(hour);
+      if ((supplyMap[hour] || 0) < min) {
+        status.eveningBelowMin = true;
+      }
+    });
+
+    return status;
   }
 
   function calculateDeficitMap(needsMap, supplyMap) {
@@ -595,6 +626,85 @@ document.addEventListener('DOMContentLoaded', function () {
       deficit[hour] = needValue - supplyValue;
     }
     return deficit;
+  }
+
+  function buildDailyCoverageMap(staffRecords, dayIndex) {
+    const map = new Array(24).fill(0);
+    const currentAssignments = collectAssignmentsForDay(staffRecords, dayIndex);
+    currentAssignments.forEach(entry => {
+      const shift = entry.shift;
+      if (!shift) return;
+      const start = shift.start;
+      const end = shift.end;
+      const normalizedEnd = end > start ? end : end + 24;
+      for (let hour = start; hour < normalizedEnd; hour++) {
+        if (hour >= 24) {
+          continue;
+        }
+        const normalizedHour = hour % 24;
+        map[normalizedHour] = (map[normalizedHour] || 0) + 1;
+      }
+    });
+
+    if (dayIndex > 0) {
+      const prevAssignments = collectAssignmentsForDay(staffRecords, dayIndex - 1);
+      prevAssignments.forEach(entry => {
+        const shift = entry.shift;
+        if (!shift) return;
+        const start = shift.start;
+        const end = shift.end;
+        const normalizedEnd = end > start ? end : end + 24;
+        for (let hour = start; hour < normalizedEnd; hour++) {
+          if (hour < 24) {
+            continue;
+          }
+          const normalizedHour = hour - 24;
+          if (normalizedHour >= 0 && normalizedHour < 24) {
+            map[normalizedHour] = (map[normalizedHour] || 0) + 1;
+          }
+        }
+      });
+    }
+
+    return map;
+  }
+
+  function validateCoverageBounds(staffRecords, daysInMonth) {
+    for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
+      const coverage = buildDailyCoverageMap(staffRecords, dayIndex);
+      const issues = [];
+
+      EVENING_HOURS.forEach(hour => {
+        const { min, max } = getBoundsForHour(hour);
+        const value = coverage[hour] || 0;
+        if (value < min || (Number.isFinite(max) && value > max)) {
+          issues.push({
+            hour,
+            expected: `${min}-${Number.isFinite(max) ? max : '∞'}`,
+            actual: value,
+          });
+        }
+      });
+
+      NIGHT_STRICT_HOURS.forEach(hour => {
+        if (dayIndex === 0 && hour < 7) {
+          return;
+        }
+        const { min } = getBoundsForHour(hour);
+        const value = coverage[hour] || 0;
+        if (value !== min) {
+          issues.push({
+            hour,
+            expected: `${min}`,
+            actual: value,
+          });
+        }
+      });
+
+      if (issues.length) {
+        console.warn(`Coverage bounds violated on day ${dayIndex + 1}:`, issues);
+      }
+    }
   }
 
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
@@ -840,7 +950,7 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
-        if (currentSupplyMap && wouldExceedCap(currentSupplyMap, shiftDefinition)) {
+        if (currentSupplyMap && wouldExceedBounds(currentSupplyMap, shiftDefinition)) {
           return;
         }
 
@@ -852,7 +962,7 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
 
-        score += evaluateNightShiftContribution(currentSupplyMap, shiftDefinition);
+        score += evaluateBoundsContribution(currentSupplyMap, shiftDefinition);
 
         const afterMonth = (record.workdaysInMonth || 0) + 1;
         const target = isFiniteNumber(record.targetWorkdays)
@@ -1016,11 +1126,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
       while (true) {
         const deficitMap = calculateDeficitMap(needsMap, supplyMap);
-        if (isNightCoverageSatisfied(supplyMap) || !hasNightCriticalDeficit(deficitMap)) {
+        const nightStatus = calculateNightCoverageNeeds(supplyMap);
+        if (!nightStatus.strictBelowMin && !nightStatus.eveningBelowMin) {
           break;
         }
 
-        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, NIGHT_SHIFTS);
+        const allowedShifts = nightStatus.strictBelowMin ? NIGHT_SHIFTS : ['遅番'];
+        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, allowedShifts);
         if (!availableRecords.length) {
           break;
         }
@@ -1029,7 +1141,7 @@ document.addEventListener('DOMContentLoaded', function () {
           availableRecords,
           deficitMap,
           dayIndex,
-          NIGHT_SHIFTS,
+          allowedShifts,
           daysInMonth,
           supplyMap
         );
@@ -1050,11 +1162,13 @@ document.addEventListener('DOMContentLoaded', function () {
         assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
 
-        const nextIndex = dayIndex + 1;
-        if (nextIndex < daysInMonth) {
-          const nextCell = staffRecord.cells[nextIndex];
-          if (nextCell && !nextCell.isLocked) {
-            markNightShiftRest(nextCell);
+        if (NIGHT_SHIFTS.includes(shift.name)) {
+          const nextIndex = dayIndex + 1;
+          if (nextIndex < daysInMonth) {
+            const nextCell = staffRecord.cells[nextIndex];
+            if (nextCell && !nextCell.isLocked) {
+              markNightShiftRest(nextCell);
+            }
           }
         }
       }
@@ -1122,6 +1236,8 @@ document.addEventListener('DOMContentLoaded', function () {
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
       }
     }
+
+    validateCoverageBounds(staffRecords, daysInMonth);
 
     // Final rendering: push schedule back to DOM
     staffRecords.forEach(record => {
