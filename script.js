@@ -449,50 +449,6 @@ document.addEventListener('DOMContentLoaded', function () {
     return deficit;
   }
 
-  function buildHourlyNeeds(dayType) {
-    return createHourlyNeedsMap(dayType);
-  }
-
-  function computeShiftRequirements(dayType) {
-    const hourlyNeeds = buildHourlyNeeds(dayType);
-    const remainingNeeds = hourlyNeeds.slice();
-    const requirements = {};
-
-    for (let iteration = 0; iteration < 500; iteration++) {
-      let bestShift = null;
-      let bestScore = 0;
-
-      SHIFT_DEFINITIONS.forEach(shift => {
-        let score = 0;
-        for (let hour = shift.start; hour < shift.end; hour++) {
-          score += remainingNeeds[hour % 24];
-        }
-        if (score > bestScore) {
-          bestScore = score;
-          bestShift = shift;
-        }
-      });
-
-      if (!bestShift || bestScore === 0) {
-        break;
-      }
-
-      requirements[bestShift.name] = (requirements[bestShift.name] || 0) + 1;
-      for (let hour = bestShift.start; hour < bestShift.end; hour++) {
-        const index = hour % 24;
-        if (remainingNeeds[index] > 0) {
-          remainingNeeds[index] -= 1;
-        }
-      }
-
-      if (!remainingNeeds.some(value => value > 0)) {
-        break;
-      }
-    }
-
-    return requirements;
-  }
-
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
     if (!cellRecord) return;
     cellRecord.assignment = '休み';
@@ -542,6 +498,61 @@ document.addEventListener('DOMContentLoaded', function () {
     return true;
   }
 
+  function findBestAssignment(availableRecords, deficitMap) {
+    if (!Array.isArray(availableRecords) || !availableRecords.length) {
+      return null;
+    }
+
+    let bestMove = null;
+
+    availableRecords.forEach(record => {
+      if (!record || !record.staffObject) return;
+      const available = Array.isArray(record.staffObject.availableShifts)
+        ? record.staffObject.availableShifts
+        : [];
+
+      available.forEach(shiftName => {
+        const shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
+        if (!shiftDefinition) return;
+
+        let score = 0;
+        for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
+          const deficit = deficitMap[hour % 24] || 0;
+          if (deficit > 0) {
+            score += deficit;
+          }
+        }
+
+        if (score <= 0) {
+          return;
+        }
+
+        if (!bestMove || score > bestMove.score) {
+          bestMove = {
+            staffRecord: record,
+            shift: shiftDefinition,
+            score,
+          };
+          return;
+        }
+
+        if (bestMove && score === bestMove.score) {
+          const currentMonthWork = record.workdaysInMonth || 0;
+          const bestMonthWork = bestMove.staffRecord ? bestMove.staffRecord.workdaysInMonth || 0 : 0;
+          if (currentMonthWork < bestMonthWork) {
+            bestMove = {
+              staffRecord: record,
+              shift: shiftDefinition,
+              score,
+            };
+          }
+        }
+      });
+    });
+
+    return bestMove;
+  }
+
   function generateShift() {
     if (state.targetYear == null || state.targetMonth == null) {
       console.error('対象年月が設定されていないため、シフトを生成できません。');
@@ -556,10 +567,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const year = state.targetYear;
     const month = state.targetMonth;
-
     const daysInMonth = new Date(year, month, 0).getDate();
 
-    // Step 1: Initialize staffRecords with DOM references and counters.
     const staffRecords = state.staff.map(staff => {
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
@@ -596,7 +605,6 @@ document.addEventListener('DOMContentLoaded', function () {
       };
     });
 
-    // Step 2: Apply fixed holidays and requested day-offs up front.
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
         if (record.fixedHolidays.includes(String(cellRecord.dayOfWeek))) {
@@ -614,7 +622,6 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
-    // Step 3: Iterate through each day and assign shifts while enforcing rules.
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
       const currentDate = new Date(year, month - 1, day);
@@ -653,27 +660,90 @@ document.addEventListener('DOMContentLoaded', function () {
       });
 
       const dayType = getDayType(dayOfWeek);
-      const requirements = computeShiftRequirements(dayType);
+      const needsMap = createHourlyNeedsMap(dayType);
+      const assignedShiftsThisDay = [];
+      let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
 
-      SHIFT_DEFINITIONS.forEach(shift => {
-        const needed = requirements[shift.name] || 0;
-        let assigned = 0;
-        while (assigned < needed) {
-          const candidate = staffRecords.find(record => canAssignShift(record, dayIndex, shift.name));
-          if (!candidate) {
-            break;
+      while (true) {
+        const deficitMap = calculateDeficitMap(needsMap, supplyMap);
+        const remainingNeeds = deficitMap.some(value => value > 0);
+        if (!remainingNeeds) {
+          break;
+        }
+
+        const availableRecords = staffRecords.filter(record => {
+          const cellRecord = record.cells[dayIndex];
+          if (!cellRecord || cellRecord.isLocked || cellRecord.assignment) {
+            return false;
           }
 
-          const candidateCell = candidate.cells[dayIndex];
-          assignShiftToCell(candidateCell, shift.name);
-          candidate.workdaysInMonth += 1;
-          candidate.workdaysInWeek += 1;
-          assigned += 1;
+          const prevAssignment = dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment : '';
+          if (prevAssignment && NIGHT_SHIFTS.includes(prevAssignment)) {
+            return false;
+          }
+
+          let consecutiveWorkdays = 0;
+          for (let back = dayIndex - 1; back >= 0; back--) {
+            const previous = record.cells[back];
+            if (!previous || !previous.assignment || previous.assignment === '休み') {
+              break;
+            }
+            consecutiveWorkdays += 1;
+          }
+          if (consecutiveWorkdays >= MAX_CONSECUTIVE_WORKDAYS) {
+            return false;
+          }
+
+          const maxDays = record.staffObject.maxWorkingDays;
+          if (typeof maxDays === 'number' && !Number.isNaN(maxDays) && record.workdaysInMonth >= maxDays) {
+            return false;
+          }
+
+          const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
+          if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
+            if (record.workdaysInWeek >= maxDaysPerWeek) {
+              return false;
+            }
+          }
+
+          const available = Array.isArray(record.staffObject.availableShifts)
+            ? record.staffObject.availableShifts
+            : [];
+          const hasAnyShift = available.some(shiftName =>
+            SHIFT_DEFINITIONS.some(def => def.name === shiftName)
+          );
+          return hasAnyShift;
+        });
+
+        if (!availableRecords.length) {
+          break;
         }
-      });
+
+        const bestMove = findBestAssignment(availableRecords, deficitMap);
+        if (!bestMove) {
+          break;
+        }
+
+        const targetRecord = bestMove.staffRecord;
+        const shiftDefinition = bestMove.shift;
+
+        if (!canAssignShift(targetRecord, dayIndex, shiftDefinition.name)) {
+          markForcedRest(targetRecord.cells[dayIndex]);
+          continue;
+        }
+
+        assignShiftToCell(targetRecord.cells[dayIndex], shiftDefinition.name);
+        targetRecord.workdaysInMonth += 1;
+        targetRecord.workdaysInWeek += 1;
+
+        assignedShiftsThisDay.push({
+          staff: targetRecord.staffObject,
+          shift: shiftDefinition,
+        });
+        supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
+      }
     }
 
-    // Step 4: Reflect the final assignments in the DOM.
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
         const content = cellRecord.assignment || '';
