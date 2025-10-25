@@ -37,6 +37,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
+  const MIN_WORKDAY_GOAL_RATIO = 0.7;
+  const MIN_GOAL_BONUS_WEIGHT = 10;
 
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
   const WEEKDAY_INDEX_MAP = {
@@ -527,6 +529,15 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
+        const goal = record.minWorkdaysGoal;
+        if (typeof goal === 'number' && !Number.isNaN(goal)) {
+          const currentWork = record.workdaysInMonth || 0;
+          const remainingToGoal = goal - currentWork;
+          if (remainingToGoal > 0) {
+            score += remainingToGoal * MIN_GOAL_BONUS_WEIGHT;
+          }
+        }
+
         if (!bestMove || score > bestMove.score) {
           bestMove = {
             staffRecord: record,
@@ -602,6 +613,10 @@ document.addEventListener('DOMContentLoaded', function () {
         cells,
         workdaysInMonth: 0,
         workdaysInWeek: 0,
+        minWorkdaysGoal:
+          typeof staff.maxWorkingDays === 'number' && !Number.isNaN(staff.maxWorkingDays)
+            ? Math.ceil(Math.max(staff.maxWorkingDays * MIN_WORKDAY_GOAL_RATIO, 0))
+            : null,
       };
     });
 
