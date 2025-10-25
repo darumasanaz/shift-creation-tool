@@ -47,18 +47,9 @@ document.addEventListener('DOMContentLoaded', function () {
   };
   const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
   const EVENING_HOURS = [18, 19, 20];
-  const HOUR_BOUNDS = (() => {
-    const bounds = new Array(24)
-      .fill(null)
-      .map(() => ({ min: 0, max: Number.POSITIVE_INFINITY }));
-    EVENING_HOURS.forEach(hour => {
-      bounds[hour] = { min: 2, max: 3 };
-    });
-    NIGHT_STRICT_HOURS.forEach(hour => {
-      bounds[hour] = { min: 2, max: 2 };
-    });
-    return bounds;
-  })();
+  const DAY_NEED_WEIGHT = 10;
+  const DAY_OVERSUP_ALLOW = 1;
+  const DAY_OVERSUP_PENALTY = 4;
   const NIGHT_PRIORITY_ORDER = ['夜勤C', '夜勤B', '夜勤A'];
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
@@ -465,6 +456,49 @@ document.addEventListener('DOMContentLoaded', function () {
     return map;
   }
 
+  const DAYTIME_NEEDS_CACHE = new Map();
+
+  function getCachedDaytimeNeeds(dayType) {
+    if (!dayType) {
+      return null;
+    }
+    if (!DAYTIME_NEEDS_CACHE.has(dayType)) {
+      DAYTIME_NEEDS_CACHE.set(dayType, createHourlyNeedsMap(dayType));
+    }
+    return DAYTIME_NEEDS_CACHE.get(dayType);
+  }
+
+  function getMinMaxForHour(dayType, hour, isNextMorning = false) {
+    if (hour == null) {
+      return { min: 0, max: Number.POSITIVE_INFINITY };
+    }
+
+    const normalized = ((hour % 24) + 24) % 24;
+
+    if (isNextMorning) {
+      if (normalized >= 0 && normalized <= 6) {
+        return { min: 2, max: 2 };
+      }
+      return { min: 0, max: Number.POSITIVE_INFINITY };
+    }
+
+    if (normalized >= 21 && normalized <= 23) {
+      return { min: 2, max: 2 };
+    }
+
+    if (normalized >= 18 && normalized <= 20) {
+      return { min: 2, max: 3 };
+    }
+
+    if (normalized >= 7 && normalized <= 17) {
+      const needsMap = getCachedDaytimeNeeds(dayType);
+      const min = needsMap ? needsMap[normalized] || 0 : 0;
+      return { min, max: Number.POSITIVE_INFINITY };
+    }
+
+    return { min: 0, max: Number.POSITIVE_INFINITY };
+  }
+
   function createHourlySupplyMap(assignedShifts) {
     const map = new Array(24).fill(0);
     if (!Array.isArray(assignedShifts) || !assignedShifts.length) {
@@ -496,30 +530,30 @@ document.addEventListener('DOMContentLoaded', function () {
     return map;
   }
 
-  function getBoundsForHour(hour) {
-    if (hour == null) {
-      return { min: 0, max: Number.POSITIVE_INFINITY };
-    }
-    const normalized = ((hour % 24) + 24) % 24;
-    return HOUR_BOUNDS[normalized] || { min: 0, max: Number.POSITIVE_INFINITY };
-  }
-
-  function wouldExceedBounds(supplyMap, shiftDefinition) {
-    if (!Array.isArray(supplyMap) || !shiftDefinition) {
+  function wouldViolateHardCaps(dayIndex, shiftDefinition, context = null) {
+    if (!shiftDefinition) {
       return false;
     }
     const start = shiftDefinition.start;
     const end = shiftDefinition.end;
     const normalizedEnd = end > start ? end : end + 24;
+    const supplyMap = context && Array.isArray(context.supplyMap) ? context.supplyMap : null;
+    const dayType = context ? context.dayType : null;
+    const nextDayType = context ? context.nextDayType : null;
+
     for (let hour = start; hour < normalizedEnd; hour++) {
-      const { max } = getBoundsForHour(hour);
-      if (Number.isFinite(max)) {
-        const current = supplyMap[hour % 24] || 0;
-        if (current + 1 > max) {
-          return true;
-        }
+      const normalizedHour = ((hour % 24) + 24) % 24;
+      const isNextMorning = hour >= 24;
+      const hourDayType = isNextMorning ? nextDayType : dayType;
+      const { min, max } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
+      const current = supplyMap ? supplyMap[normalizedHour] || 0 : 0;
+      const after = current + 1;
+
+      if (Number.isFinite(max) && after > max) {
+        return true;
       }
     }
+
     return false;
   }
 
@@ -546,51 +580,7 @@ document.addEventListener('DOMContentLoaded', function () {
     return EVENING_HOURS.includes(hour);
   }
 
-  function evaluateBoundsContribution(supplyMap, shiftDefinition) {
-    if (!Array.isArray(supplyMap) || !shiftDefinition) {
-      return 0;
-    }
-
-    let bonus = 0;
-    const start = shiftDefinition.start;
-    const end = shiftDefinition.end;
-    const normalizedEnd = end > start ? end : end + 24;
-
-    for (let hour = start; hour < normalizedEnd; hour++) {
-      const normalizedHour = hour % 24;
-      const { min, max } = getBoundsForHour(hour);
-      if (min === 0 && !Number.isFinite(max)) {
-        continue;
-      }
-
-      const before = supplyMap[normalizedHour] || 0;
-      const after = before + 1;
-
-      if (before < min) {
-        const improvement = Math.min(after, min) - before;
-        let weight = 10;
-        if (isStrictNightHour(normalizedHour)) {
-          weight = 50;
-        } else if (isEveningHour(normalizedHour)) {
-          weight = 25;
-        }
-        bonus += improvement * weight;
-      } else if (isEveningHour(normalizedHour) && before >= min && before < max) {
-        bonus += 5;
-      }
-    }
-
-    if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
-      const priorityIndex = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
-      if (priorityIndex !== -1) {
-        bonus += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
-      }
-    }
-
-    return bonus;
-  }
-
-  function calculateNightCoverageNeeds(supplyMap) {
+  function calculateNightCoverageNeeds(supplyMap, dayType, nextDayType) {
     const status = {
       strictBelowMin: false,
       eveningBelowMin: false,
@@ -599,15 +589,22 @@ document.addEventListener('DOMContentLoaded', function () {
       return status;
     }
 
-    NIGHT_STRICT_HOURS.forEach(hour => {
-      const { min } = getBoundsForHour(hour);
+    [21, 22, 23].forEach(hour => {
+      const { min } = getMinMaxForHour(dayType, hour, false);
       if ((supplyMap[hour] || 0) < min) {
         status.strictBelowMin = true;
       }
     });
 
+    for (let hour = 0; hour <= 6; hour++) {
+      const { min } = getMinMaxForHour(nextDayType, hour, true);
+      if ((supplyMap[hour] || 0) < min) {
+        status.strictBelowMin = true;
+      }
+    }
+
     EVENING_HOURS.forEach(hour => {
-      const { min } = getBoundsForHour(hour);
+      const { min } = getMinMaxForHour(dayType, hour, false);
       if ((supplyMap[hour] || 0) < min) {
         status.eveningBelowMin = true;
       }
@@ -639,6 +636,9 @@ document.addEventListener('DOMContentLoaded', function () {
       const normalizedEnd = end > start ? end : end + 24;
       for (let hour = start; hour < normalizedEnd; hour++) {
         if (hour >= 24) {
+          break;
+        }
+        if (hour < 0) {
           continue;
         }
         const normalizedHour = hour % 24;
@@ -669,42 +669,97 @@ document.addEventListener('DOMContentLoaded', function () {
     return map;
   }
 
-  function validateCoverageBounds(staffRecords, daysInMonth) {
+  function validateSchedule(staffRecords, daysInMonth, year, month) {
+    let daytimeShortageSlots = 0;
+    let daytimeOversupplySlots = 0;
+    let nightViolations = 0;
+
     for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
       const coverage = buildDailyCoverageMap(staffRecords, dayIndex);
+      const currentDate = new Date(year, month - 1, dayIndex + 1);
+      const dayType = getDayType(currentDate.getDay());
+      const nextDate = dayIndex + 1 < daysInMonth ? new Date(year, month - 1, dayIndex + 2) : null;
+      const nextDayType = nextDate ? getDayType(nextDate.getDay()) : null;
+      const needsMap = getCachedDaytimeNeeds(dayType) || new Array(24).fill(0);
       const issues = [];
 
       EVENING_HOURS.forEach(hour => {
-        const { min, max } = getBoundsForHour(hour);
+        const { min, max } = getMinMaxForHour(dayType, hour, false);
         const value = coverage[hour] || 0;
         if (value < min || (Number.isFinite(max) && value > max)) {
           issues.push({
+            type: 'night',
             hour,
             expected: `${min}-${Number.isFinite(max) ? max : '∞'}`,
             actual: value,
           });
+          nightViolations += 1;
         }
       });
 
-      NIGHT_STRICT_HOURS.forEach(hour => {
-        if (dayIndex === 0 && hour < 7) {
-          return;
-        }
-        const { min } = getBoundsForHour(hour);
+      [21, 22, 23].forEach(hour => {
+        const { min } = getMinMaxForHour(dayType, hour, false);
         const value = coverage[hour] || 0;
         if (value !== min) {
           issues.push({
+            type: 'night',
             hour,
             expected: `${min}`,
             actual: value,
           });
+          nightViolations += 1;
         }
       });
 
+      if (dayIndex > 0) {
+        for (let hour = 0; hour <= 6; hour++) {
+          const { min } = getMinMaxForHour(nextDayType, hour, true);
+          const value = coverage[hour] || 0;
+          if (value !== min) {
+            issues.push({
+              type: 'night',
+              hour,
+              expected: `${min}`,
+              actual: value,
+            });
+            nightViolations += 1;
+          }
+        }
+      }
+
+      for (let hour = 7; hour <= 17; hour++) {
+        const need = needsMap[hour] || 0;
+        const value = coverage[hour] || 0;
+        if (value < need) {
+          issues.push({
+            type: 'day-deficit',
+            hour,
+            expected: `>=${need}`,
+            actual: value,
+          });
+          daytimeShortageSlots += need - value;
+        }
+
+        const allowed = need + DAY_OVERSUP_ALLOW;
+        if (value > allowed) {
+          issues.push({
+            type: 'day-oversupply',
+            hour,
+            expected: `<=${allowed}`,
+            actual: value,
+          });
+          daytimeOversupplySlots += value - allowed;
+        }
+      }
+
       if (issues.length) {
-        console.warn(`Coverage bounds violated on day ${dayIndex + 1}:`, issues);
+        console.warn(`Coverage issues on day ${dayIndex + 1}:`, issues);
       }
     }
+
+    console.info(
+      `Daytime shortages (staff-hours): ${daytimeShortageSlots}, oversupply beyond need + ${DAY_OVERSUP_ALLOW} (staff-hours): ${daytimeOversupplySlots}, night coverage warnings: ${nightViolations}`
+    );
   }
 
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
@@ -882,6 +937,8 @@ document.addEventListener('DOMContentLoaded', function () {
     deficitMap,
     dayIndex,
     allowedShiftNames = null,
+    dayType = null,
+    nextDayType = null,
     daysInMonth = 30,
     currentSupplyMap = null
   ) {
@@ -950,19 +1007,63 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
-        if (currentSupplyMap && wouldExceedBounds(currentSupplyMap, shiftDefinition)) {
+        if (
+          currentSupplyMap &&
+          wouldViolateHardCaps(dayIndex, shiftDefinition, {
+            supplyMap: currentSupplyMap,
+            dayType,
+            nextDayType,
+          })
+        ) {
           return;
         }
 
         let score = 0;
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
-          const deficit = deficitMap[hour % 24] || 0;
+          const normalizedHour = ((hour % 24) + 24) % 24;
+          const isNextMorning = hour >= 24;
+          const hourDayType = isNextMorning ? nextDayType : dayType;
+          const { min, max } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
+          const currentCoverage = currentSupplyMap ? currentSupplyMap[normalizedHour] || 0 : 0;
+          const afterCoverage = currentCoverage + 1;
+          const deficit = deficitMap[normalizedHour] || 0;
           if (deficit > 0) {
             score += deficit;
           }
+
+          const isNightStrict = isStrictNightHour(normalizedHour);
+          const isEvening = isEveningHour(normalizedHour);
+
+          if ((isNightStrict || isEvening) && min > 0) {
+            const improvement = Math.min(afterCoverage, min) - currentCoverage;
+            if (improvement > 0) {
+              const weight = isNightStrict ? 50 : 25;
+              score += improvement * weight;
+            }
+          }
+
+          if (!isNextMorning && isEvening && currentCoverage >= min && (!Number.isFinite(max) || currentCoverage < max)) {
+            score += 5;
+          }
+
+          const isDaytimeHour = !isNextMorning && normalizedHour >= 7 && normalizedHour <= 17;
+          if (isDaytimeHour) {
+            if (currentCoverage < min) {
+              score += DAY_NEED_WEIGHT * (min - currentCoverage);
+            }
+            const overAmount = afterCoverage - (min + DAY_OVERSUP_ALLOW);
+            if (overAmount > 0) {
+              score -= DAY_OVERSUP_PENALTY * overAmount;
+            }
+          }
         }
 
-        score += evaluateBoundsContribution(currentSupplyMap, shiftDefinition);
+        if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+          const priorityIndex = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
+          if (priorityIndex !== -1) {
+            score += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
+          }
+        }
 
         const afterMonth = (record.workdaysInMonth || 0) + 1;
         const target = isFiniteNumber(record.targetWorkdays)
@@ -1118,13 +1219,15 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
       const needsMap = createHourlyNeedsMap(dayType);
       let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
       let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
 
       while (true) {
         const deficitMap = calculateDeficitMap(needsMap, supplyMap);
-        const nightStatus = calculateNightCoverageNeeds(supplyMap);
+        const nightStatus = calculateNightCoverageNeeds(supplyMap, dayType, nextDayType);
         if (!nightStatus.strictBelowMin && !nightStatus.eveningBelowMin) {
           break;
         }
@@ -1140,6 +1243,8 @@ document.addEventListener('DOMContentLoaded', function () {
           deficitMap,
           dayIndex,
           allowedShifts,
+          dayType,
+          nextDayType,
           daysInMonth,
           supplyMap
         );
@@ -1186,6 +1291,8 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
       const needsMap = createHourlyNeedsMap(dayType);
       let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
 
@@ -1213,6 +1320,8 @@ document.addEventListener('DOMContentLoaded', function () {
           deficitMap,
           dayIndex,
           DAYTIME_SHIFTS,
+          dayType,
+          nextDayType,
           daysInMonth,
           supplyMap
         );
@@ -1235,7 +1344,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    validateCoverageBounds(staffRecords, daysInMonth);
+    validateSchedule(staffRecords, daysInMonth, year, month);
 
     // Final rendering: push schedule back to DOM
     staffRecords.forEach(record => {
