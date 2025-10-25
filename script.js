@@ -35,6 +35,9 @@ document.addEventListener('DOMContentLoaded', function () {
     },
   };
 
+  const MAX_CONSECUTIVE_WORKDAYS = 5;
+  const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
+
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
   const WEEKDAY_INDEX_MAP = {
     sun: '0',
@@ -337,6 +340,10 @@ document.addEventListener('DOMContentLoaded', function () {
     markCellAsOff(cellRecord, '#fff2cc');
   }
 
+  function markForcedRest(cellRecord) {
+    markCellAsOff(cellRecord, '#fff2cc');
+  }
+
   function assignShiftToCell(cellRecord, shiftName) {
     if (!cellRecord) return;
     cellRecord.assignment = shiftName;
@@ -434,12 +441,41 @@ document.addEventListener('DOMContentLoaded', function () {
       const dayOfWeek = currentDate.getDay();
 
       staffRecords.forEach(record => {
-        if (record.nightShiftRestDays.has(dayIndex)) {
-          const cellRecord = record.cells[dayIndex];
-          if (cellRecord && !cellRecord.isLockedOff) {
-            markNightShiftRest(cellRecord);
+        const cellRecord = record.cells[dayIndex];
+        if (!cellRecord || cellRecord.isLockedOff) {
+          if (record.nightShiftRestDays.has(dayIndex)) {
+            record.nightShiftRestDays.delete(dayIndex);
           }
+          return;
+        }
+
+        if (record.nightShiftRestDays.has(dayIndex)) {
+          markNightShiftRest(cellRecord);
           record.nightShiftRestDays.delete(dayIndex);
+          return;
+        }
+
+        const prevDayIndex = dayIndex - 1;
+        if (prevDayIndex >= 0) {
+          const prevAssignment = record.cells[prevDayIndex]?.assignment;
+          if (prevAssignment && NIGHT_SHIFTS.includes(prevAssignment)) {
+            markNightShiftRest(cellRecord);
+            return;
+          }
+        }
+
+        let consecutiveWorkdays = 0;
+        for (let back = dayIndex - 1; back >= 0; back--) {
+          const previous = record.cells[back];
+          if (!previous || !previous.assignment || previous.assignment === '休み') {
+            break;
+          }
+          consecutiveWorkdays += 1;
+        }
+
+        if (consecutiveWorkdays >= MAX_CONSECUTIVE_WORKDAYS) {
+          markForcedRest(cellRecord);
+          return;
         }
       });
 
@@ -458,7 +494,7 @@ document.addEventListener('DOMContentLoaded', function () {
           assignShiftToCell(cellRecord, shift.name);
           candidate.workingDays += 1;
 
-          if (shift.name.startsWith('夜勤')) {
+          if (NIGHT_SHIFTS.includes(shift.name)) {
             const nextDayIndex = dayIndex + 1;
             if (nextDayIndex < candidate.cells.length) {
               candidate.nightShiftRestDays.add(nextDayIndex);
@@ -469,37 +505,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       });
     }
-  }
-
-  function isDayOff(staffObject, dateStr) {
-    return state.dayoffs.some(dayoff => {
-      const matchesStaffByName = dayoff.staffName && dayoff.staffName === staffObject.name;
-      const matchesStaffById = !dayoff.staffName && dayoff.staffId && dayoff.staffId === staffObject.id;
-      if (!matchesStaffByName && !matchesStaffById) return false;
-      return dayoff.date === dateStr;
-    });
-
-    // Apply fixed holidays first.
-    staffCellRecords.forEach(({ staffObject, cells }) => {
-      const fixedHolidays = normalizeFixedHolidays(staffObject);
-      if (!fixedHolidays.length) return;
-      cells.forEach(({ cell, dayOfWeek }) => {
-        if (fixedHolidays.includes(String(dayOfWeek))) {
-          cell.textContent = '休み';
-          cell.style.backgroundColor = '#ffdcdc';
-        }
-      });
-    });
-
-    // Apply requested day-offs afterwards to overwrite as needed.
-    staffCellRecords.forEach(({ staffObject, cells }) => {
-      cells.forEach(({ cell, dateStr }) => {
-        if (isDayOff(staffObject, dateStr)) {
-          cell.textContent = '休み';
-          cell.style.backgroundColor = '#ffdcdc';
-        }
-      });
-    });
   }
 
   function isDayOff(staffObject, dateStr) {
