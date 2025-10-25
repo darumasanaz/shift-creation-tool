@@ -54,11 +54,13 @@
             <!-- 結果表示セクション -->
             <section id="result-area" class="panel" aria-labelledby="result-title">
                 <h2 id="result-title">シフト作成結果</h2>
+                <button id="export-csv-btn">CSV形式でコピー</button>
                 <div class="table-wrapper">
                     <table>
                         <!-- ヘッダーはJavaScriptで生成 -->
                     </table>
                 </div>
+                <textarea id="csv-output" readonly style="display: none; width: 100%; height: 150px;"></textarea>
             </section>
         </div>
     </main>
