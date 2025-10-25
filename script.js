@@ -159,7 +159,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
     renderStaffList();
     renderDayoffList();
-    renderHeader();
+  }
+
+  function ensureTargetMonthInitialized() {
+    if (state.targetYear != null && state.targetMonth != null) {
+      return;
+    }
+
+    const today = new Date();
+    const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    state.targetYear = nextMonthDate.getFullYear();
+    state.targetMonth = nextMonthDate.getMonth() + 1;
+
+    saveState();
   }
 
   function generateStaffId() {
@@ -245,22 +257,6 @@ document.addEventListener('DOMContentLoaded', function () {
       return (matchesStaffId || matchesStaffName) && dayoff.date === date;
     });
     if (isDuplicate) return;
-
-    const [yearStr, monthStr] = date.split('-');
-    const year = Number(yearStr);
-    const month = Number(monthStr);
-
-    if (!Number.isFinite(year) || !Number.isFinite(month)) return;
-
-    if (state.targetMonth == null) {
-      const yearInt = Math.trunc(year);
-      const monthInt = Math.trunc(month);
-      if (monthInt >= 1 && monthInt <= 12) {
-        state.targetYear = yearInt;
-        state.targetMonth = monthInt;
-        renderHeader();
-      }
-    }
 
     state.dayoffs.push({ staffId, staffName, date });
     renderDayoffList();
@@ -458,7 +454,10 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function generateShift() {
-    if (state.targetYear == null || state.targetMonth == null) return;
+    if (state.targetYear == null || state.targetMonth == null) {
+      console.error('対象年月が設定されていないため、シフトを生成できません。');
+      return;
+    }
 
     renderHeader();
 
@@ -727,6 +726,8 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   loadState();
+  ensureTargetMonthInitialized();
+  renderHeader();
 
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
