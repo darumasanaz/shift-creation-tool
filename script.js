@@ -1,6 +1,18 @@
 document.addEventListener('DOMContentLoaded', function () {
   'use strict';
 
+  function safeRun(fn) {
+    try {
+      if (typeof fn === 'function') fn();
+    } catch (e) {
+      console.warn('[init skipped]', e);
+    }
+  }
+
+  window.addEventListener('error', e => {
+    console.warn('[global error]', (e && e.message) || e);
+  });
+
   const SHIFT_DEFINITIONS = [
     { name: '早番', start: 7, end: 16 },
     { name: '日勤A', start: 9, end: 18 },
@@ -234,6 +246,7 @@ document.addEventListener('DOMContentLoaded', function () {
   function addStaff(event) {
     event.preventDefault();
     const name = staffNameInput ? staffNameInput.value.trim() : '';
+    // console.debug('[addStaff] clicked name=', name);
     if (!name) return;
 
     const isDuplicate = state.staff.some(staff => staff.name === name);
@@ -1344,7 +1357,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    validateSchedule(staffRecords, daysInMonth, year, month);
+    safeRun(() => validateSchedule(staffRecords, daysInMonth, year, month));
 
     // Final rendering: push schedule back to DOM
     staffRecords.forEach(record => {
@@ -1519,14 +1532,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     saveState();
   }
-  renderHeader();
-
-  loadState();
-  const targetChanged = setNextMonthTarget();
-  if (targetChanged) {
-    saveState();
-  }
-  renderHeader();
 
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
@@ -1542,5 +1547,18 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     });
   }
+
+  safeRun(() => renderHeader());
+
+  safeRun(() => {
+    loadState();
+  });
+  safeRun(() => {
+    const targetChanged = setNextMonthTarget();
+    if (targetChanged) {
+      saveState();
+    }
+  });
+  safeRun(() => renderHeader());
 
 });
