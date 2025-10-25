@@ -411,9 +411,8 @@ document.addEventListener('DOMContentLoaded', function () {
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
     if (!cellRecord) return;
     cellRecord.assignment = '休み';
-    cellRecord.cell.textContent = '休み';
-    cellRecord.cell.style.backgroundColor = backgroundColor;
-    cellRecord.isLockedOff = true;
+    cellRecord.backgroundColor = backgroundColor;
+    cellRecord.isLocked = true;
   }
 
   function markNightShiftRest(cellRecord) {
@@ -427,14 +426,14 @@ document.addEventListener('DOMContentLoaded', function () {
   function assignShiftToCell(cellRecord, shiftName) {
     if (!cellRecord) return;
     cellRecord.assignment = shiftName;
-    cellRecord.cell.textContent = shiftName;
-    cellRecord.cell.style.backgroundColor = '#e6f7ff';
+    cellRecord.backgroundColor = '#e6f7ff';
+    cellRecord.isLocked = true;
   }
 
-  function canAssignShift(record, dayIndex, shiftName, weeklyWorkdayCounts) {
+  function canAssignShift(record, dayIndex, shiftName) {
     if (!record) return false;
     const cellRecord = record.cells[dayIndex];
-    if (!cellRecord || cellRecord.isLockedOff) return false;
+    if (!cellRecord || cellRecord.isLocked) return false;
     if (cellRecord.assignment) return false;
 
     const available = Array.isArray(record.staffObject.availableShifts)
@@ -443,13 +442,13 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!available.includes(shiftName)) return false;
 
     const maxDays = record.staffObject.maxWorkingDays;
-    if (typeof maxDays === 'number' && !Number.isNaN(maxDays) && record.workingDays >= maxDays) {
+    if (typeof maxDays === 'number' && !Number.isNaN(maxDays) && record.workdaysInMonth >= maxDays) {
       return false;
     }
 
     const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
     if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
-      const weeklyWorked = weeklyWorkdayCounts[record.staffObject.id] || 0;
+      const weeklyWorked = record.workdaysInWeek || 0;
       if (weeklyWorked >= maxDaysPerWeek) {
         return false;
       }
@@ -471,50 +470,46 @@ document.addEventListener('DOMContentLoaded', function () {
     const month = state.targetMonth;
 
     const daysInMonth = new Date(year, month, 0).getDate();
+
+    // Step 1: Initialize staffRecords with DOM references and counters.
     const staffRecords = state.staff.map(staff => {
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
       nameCell.textContent = staff.name;
       row.appendChild(nameCell);
 
-      const cellRecords = [];
+      const cells = [];
       for (let day = 1; day <= daysInMonth; day++) {
         const cell = document.createElement('td');
-        cell.textContent = '';
-        cell.style.backgroundColor = '';
+        row.appendChild(cell);
 
         const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
         const dayOfWeek = new Date(year, month - 1, day).getDay();
 
-        cellRecords.push({
+        cells.push({
           cell,
           dateStr,
           dayOfWeek,
           assignment: '',
-          isLockedOff: false,
+          isLocked: false,
+          backgroundColor: '',
         });
-        row.appendChild(cell);
       }
 
       tableBody.appendChild(row);
 
       return {
         staffObject: staff,
+        rowElement: row,
         fixedHolidays: normalizeFixedHolidays(staff),
-        workingDays: 0,
-        nightShiftRestDays: new Set(),
-        cells: cellRecords,
+        cells,
+        workdaysInMonth: 0,
+        workdaysInWeek: 0,
       };
     });
 
-    const weeklyWorkdayCounts = {};
+    // Step 2: Apply fixed holidays and requested day-offs up front.
     staffRecords.forEach(record => {
-      weeklyWorkdayCounts[record.staffObject.id] = 0;
-    });
-
-    // Apply fixed holidays first.
-    staffRecords.forEach(record => {
-      if (!record.fixedHolidays.length) return;
       record.cells.forEach(cellRecord => {
         if (record.fixedHolidays.includes(String(cellRecord.dayOfWeek))) {
           markCellAsOff(cellRecord);
@@ -522,15 +517,16 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
-    // Apply requested day-offs afterwards to overwrite as needed.
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
+        if (cellRecord.isLocked) return;
         if (isDayOff(record.staffObject, cellRecord.dateStr)) {
           markCellAsOff(cellRecord);
         }
       });
     });
 
+    // Step 3: Iterate through each day and assign shifts while enforcing rules.
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
       const currentDate = new Date(year, month - 1, day);
@@ -538,32 +534,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
       if (dayOfWeek === 0) {
         staffRecords.forEach(record => {
-          weeklyWorkdayCounts[record.staffObject.id] = 0;
+          record.workdaysInWeek = 0;
         });
       }
 
       staffRecords.forEach(record => {
         const cellRecord = record.cells[dayIndex];
-        if (!cellRecord || cellRecord.isLockedOff) {
-          if (record.nightShiftRestDays.has(dayIndex)) {
-            record.nightShiftRestDays.delete(dayIndex);
-          }
+        if (!cellRecord || cellRecord.isLocked) {
           return;
         }
 
-        if (record.nightShiftRestDays.has(dayIndex)) {
+        const prevAssignment = dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment : '';
+        if (prevAssignment && NIGHT_SHIFTS.includes(prevAssignment)) {
           markNightShiftRest(cellRecord);
-          record.nightShiftRestDays.delete(dayIndex);
           return;
-        }
-
-        const prevDayIndex = dayIndex - 1;
-        if (prevDayIndex >= 0) {
-          const prevAssignment = record.cells[prevDayIndex]?.assignment;
-          if (prevAssignment && NIGHT_SHIFTS.includes(prevAssignment)) {
-            markNightShiftRest(cellRecord);
-            return;
-          }
         }
 
         let consecutiveWorkdays = 0;
@@ -577,16 +561,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (consecutiveWorkdays >= MAX_CONSECUTIVE_WORKDAYS) {
           markForcedRest(cellRecord);
-          return;
-        }
-
-        const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-        if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
-          const weeklyWorked = weeklyWorkdayCounts[record.staffObject.id] || 0;
-          if (weeklyWorked >= maxDaysPerWeek) {
-            markForcedRest(cellRecord);
-            return;
-          }
         }
       });
 
@@ -594,32 +568,31 @@ document.addEventListener('DOMContentLoaded', function () {
       const requirements = computeShiftRequirements(dayType);
 
       SHIFT_DEFINITIONS.forEach(shift => {
-        let remaining = requirements[shift.name] || 0;
-        while (remaining > 0) {
-          const candidate = staffRecords.find(record =>
-            canAssignShift(record, dayIndex, shift.name, weeklyWorkdayCounts)
-          );
+        const needed = requirements[shift.name] || 0;
+        let assigned = 0;
+        while (assigned < needed) {
+          const candidate = staffRecords.find(record => canAssignShift(record, dayIndex, shift.name));
           if (!candidate) {
             break;
           }
 
-          const cellRecord = candidate.cells[dayIndex];
-          assignShiftToCell(cellRecord, shift.name);
-          candidate.workingDays += 1;
-          weeklyWorkdayCounts[candidate.staffObject.id] =
-            (weeklyWorkdayCounts[candidate.staffObject.id] || 0) + 1;
-
-          if (NIGHT_SHIFTS.includes(shift.name)) {
-            const nextDayIndex = dayIndex + 1;
-            if (nextDayIndex < candidate.cells.length) {
-              candidate.nightShiftRestDays.add(nextDayIndex);
-            }
-          }
-
-          remaining -= 1;
+          const candidateCell = candidate.cells[dayIndex];
+          assignShiftToCell(candidateCell, shift.name);
+          candidate.workdaysInMonth += 1;
+          candidate.workdaysInWeek += 1;
+          assigned += 1;
         }
       });
     }
+
+    // Step 4: Reflect the final assignments in the DOM.
+    staffRecords.forEach(record => {
+      record.cells.forEach(cellRecord => {
+        const content = cellRecord.assignment || '';
+        cellRecord.cell.textContent = content;
+        cellRecord.cell.style.backgroundColor = cellRecord.backgroundColor || '';
+      });
+    });
   }
 
   function isDayOff(staffObject, dateStr) {
