@@ -37,8 +37,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
-  const MIN_WORKDAY_GOAL_RATIO = 0.7;
+  const MIN_WORKDAY_GOAL_RATIO = 0;
   const MIN_GOAL_BONUS_WEIGHT = 10;
+  const FAIR_WEIGHTS = {
+    progressPenalty: 4,
+    monthOver: 2,
+    weekRisk: 6,
+    streakNearMax: 2,
+  };
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
@@ -657,7 +663,13 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  function findBestAssignment(availableRecords, deficitMap, dayIndex, allowedShiftNames = null) {
+  function findBestAssignment(
+    availableRecords,
+    deficitMap,
+    dayIndex,
+    allowedShiftNames = null,
+    daysInMonth = 30
+  ) {
     if (!Array.isArray(availableRecords) || !availableRecords.length) {
       return null;
     }
@@ -719,17 +731,32 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
 
-        if (score <= 0) {
-          return;
+        const afterMonth = (record.workdaysInMonth || 0) + 1;
+        const target = isFiniteNumber(record.targetWorkdays)
+          ? record.targetWorkdays
+          : Math.ceil(daysInMonth * 0.55);
+        const expected = Math.round(target * ((dayIndex + 1) / daysInMonth));
+        const progressOver = Math.max(0, afterMonth - expected);
+        score -= FAIR_WEIGHTS.progressPenalty * progressOver;
+
+        if (afterMonth > target) {
+          score -= FAIR_WEIGHTS.monthOver * (afterMonth - target);
         }
 
-        const goal = record.minWorkdaysGoal;
-        if (isFiniteNumber(goal)) {
-          const currentWork = record.workdaysInMonth || 0;
-          const remainingToGoal = goal - currentWork;
-          if (remainingToGoal > 0) {
-            score += remainingToGoal * MIN_GOAL_BONUS_WEIGHT;
+        const weekAfter = (record.workdaysInWeek || 0) + 1;
+        if (isFiniteNumber(maxDaysPerWeek)) {
+          const threshold = Math.max(1, maxDaysPerWeek - 1);
+          if (weekAfter > threshold) {
+            score -= FAIR_WEIGHTS.weekRisk * (weekAfter - threshold);
           }
+        }
+
+        if (wouldBeConsecutive >= MAX_CONSECUTIVE_WORKDAYS) {
+          score -= FAIR_WEIGHTS.streakNearMax * (wouldBeConsecutive - MAX_CONSECUTIVE_WORKDAYS + 1);
+        }
+
+        if (score <= 0) {
+          return;
         }
 
         const availableCount = available.length;
@@ -819,9 +846,10 @@ document.addEventListener('DOMContentLoaded', function () {
         cells,
         workdaysInMonth: 0,
         workdaysInWeek: 0,
-        minWorkdaysGoal: isFiniteNumber(staff.maxWorkingDays)
-          ? Math.ceil(Math.max(staff.maxWorkingDays * MIN_WORKDAY_GOAL_RATIO, 0))
-          : null,
+        targetWorkdays: isFiniteNumber(staff.maxWorkingDays)
+          ? staff.maxWorkingDays
+          : Math.ceil(daysInMonth * 0.55),
+        minWorkdaysGoal: null,
       };
     });
 
@@ -874,7 +902,13 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex, NIGHT_SHIFTS);
+        const bestMove = findBestAssignment(
+          availableRecords,
+          deficitMap,
+          dayIndex,
+          NIGHT_SHIFTS,
+          daysInMonth
+        );
         if (!bestMove) {
           break;
         }
@@ -938,7 +972,13 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex, DAYTIME_SHIFTS);
+        const bestMove = findBestAssignment(
+          availableRecords,
+          deficitMap,
+          dayIndex,
+          DAYTIME_SHIFTS,
+          daysInMonth
+        );
         if (!bestMove) {
           break;
         }
