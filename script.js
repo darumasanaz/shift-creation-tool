@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const MIN_WORKDAY_GOAL_RATIO = 0.7;
   const MIN_GOAL_BONUS_WEIGHT = 10;
 
+  const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
   const WEEKDAY_INDEX_MAP = {
     sun: '0',
@@ -570,6 +571,18 @@ document.addEventListener('DOMContentLoaded', function () {
           const remainingToGoal = goal - currentWork;
           if (remainingToGoal > 0) {
             score += remainingToGoal * MIN_GOAL_BONUS_WEIGHT;
+          }
+        }
+
+        const availableCount = available.length;
+        if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+          if (availableCount > 0 && availableCount <= 3) {
+            score += 50;
+          }
+        } else if (DAYTIME_SHIFTS.includes(shiftDefinition.name)) {
+          const canWorkNight = available.some(name => NIGHT_SHIFTS.includes(name));
+          if (!canWorkNight) {
+            score += 30;
           }
         }
 
