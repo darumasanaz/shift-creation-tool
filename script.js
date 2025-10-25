@@ -45,6 +45,19 @@ document.addEventListener('DOMContentLoaded', function () {
     weekRisk: 6,
     streakNearMax: 2,
   };
+  const CAP_MAP = (() => {
+    const caps = new Array(24).fill(Number.POSITIVE_INFINITY);
+    for (let hour = 18; hour < 21; hour++) {
+      caps[hour] = 3;
+    }
+    [21, 22, 23, 0, 1, 2, 3, 4, 5, 6].forEach(hour => {
+      caps[hour] = 2;
+    });
+    return caps;
+  })();
+  const NIGHT_CRITICAL_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
+  const NIGHT_TARGET = 2;
+  const NIGHT_PRIORITY_ORDER = ['夜勤C', '夜勤B', '夜勤A'];
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
@@ -481,6 +494,97 @@ document.addEventListener('DOMContentLoaded', function () {
     return map;
   }
 
+  function getCapForHour(hour) {
+    if (hour == null) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return CAP_MAP[hour % 24] ?? Number.POSITIVE_INFINITY;
+  }
+
+  function wouldExceedCap(supplyMap, shiftDefinition) {
+    if (!Array.isArray(supplyMap) || !shiftDefinition) {
+      return false;
+    }
+    const start = shiftDefinition.start;
+    const end = shiftDefinition.end;
+    const normalizedEnd = end > start ? end : end + 24;
+    for (let hour = start; hour < normalizedEnd; hour++) {
+      const cap = getCapForHour(hour);
+      if (Number.isFinite(cap)) {
+        const current = supplyMap[hour % 24] || 0;
+        if (current + 1 > cap) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function isHourCoveredByShift(shiftDefinition, targetHour) {
+    if (!shiftDefinition || targetHour == null) {
+      return false;
+    }
+    const start = shiftDefinition.start;
+    const end = shiftDefinition.end;
+    const normalizedEnd = end > start ? end : end + 24;
+    for (let hour = start; hour < normalizedEnd; hour++) {
+      if (hour % 24 === targetHour) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function evaluateNightShiftContribution(supplyMap, shiftDefinition) {
+    if (!Array.isArray(supplyMap)) {
+      return 0;
+    }
+    if (!shiftDefinition || !NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+      return 0;
+    }
+
+    let bonus = 0;
+    NIGHT_CRITICAL_HOURS.forEach(hour => {
+      if (!isHourCoveredByShift(shiftDefinition, hour)) {
+        return;
+      }
+      const before = supplyMap[hour] || 0;
+      if (before >= NIGHT_TARGET) {
+        return;
+      }
+      bonus += (NIGHT_TARGET - before) * 20;
+    });
+
+    if (shiftDefinition.name === '夜勤C') {
+      bonus += 10;
+    } else if (shiftDefinition.name === '夜勤A') {
+      bonus -= 15;
+    }
+
+    return bonus;
+  }
+
+  function isNightCoverageSatisfied(supplyMap) {
+    if (!Array.isArray(supplyMap)) {
+      return false;
+    }
+    return NIGHT_CRITICAL_HOURS.every(hour => {
+      const cap = getCapForHour(hour);
+      const current = supplyMap[hour] || 0;
+      if (Number.isFinite(cap)) {
+        return current >= cap;
+      }
+      return current >= NIGHT_TARGET;
+    });
+  }
+
+  function hasNightCriticalDeficit(deficitMap) {
+    if (!Array.isArray(deficitMap)) {
+      return false;
+    }
+    return NIGHT_CRITICAL_HOURS.some(hour => (deficitMap[hour] || 0) > 0);
+  }
+
   function calculateDeficitMap(needsMap, supplyMap) {
     const deficit = new Array(24).fill(0);
     for (let hour = 0; hour < 24; hour++) {
@@ -668,7 +772,8 @@ document.addEventListener('DOMContentLoaded', function () {
     deficitMap,
     dayIndex,
     allowedShiftNames = null,
-    daysInMonth = 30
+    daysInMonth = 30,
+    currentSupplyMap = null
   ) {
     if (!Array.isArray(availableRecords) || !availableRecords.length) {
       return null;
@@ -684,9 +789,21 @@ document.addEventListener('DOMContentLoaded', function () {
         : [];
       if (!available.length) return;
 
-      const candidateShifts = allowedShiftNames
+      let candidateShifts = allowedShiftNames
         ? available.filter(name => allowedShiftNames.includes(name))
         : available.slice();
+      if (
+        allowedShiftNames &&
+        allowedShiftNames.length &&
+        allowedShiftNames.every(name => NIGHT_SHIFTS.includes(name))
+      ) {
+        candidateShifts = candidateShifts.sort((a, b) => {
+          const aIndex = NIGHT_PRIORITY_ORDER.indexOf(a);
+          const bIndex = NIGHT_PRIORITY_ORDER.indexOf(b);
+          return (aIndex === -1 ? NIGHT_PRIORITY_ORDER.length : aIndex) -
+            (bIndex === -1 ? NIGHT_PRIORITY_ORDER.length : bIndex);
+        });
+      }
       if (!candidateShifts.length) return;
 
       const prevAssignment =
@@ -723,6 +840,10 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
+        if (currentSupplyMap && wouldExceedCap(currentSupplyMap, shiftDefinition)) {
+          return;
+        }
+
         let score = 0;
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
           const deficit = deficitMap[hour % 24] || 0;
@@ -730,6 +851,8 @@ document.addEventListener('DOMContentLoaded', function () {
             score += deficit;
           }
         }
+
+        score += evaluateNightShiftContribution(currentSupplyMap, shiftDefinition);
 
         const afterMonth = (record.workdaysInMonth || 0) + 1;
         const target = isFiniteNumber(record.targetWorkdays)
@@ -893,7 +1016,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       while (true) {
         const deficitMap = calculateDeficitMap(needsMap, supplyMap);
-        if (!hasPositiveDeficitForShifts(deficitMap, NIGHT_SHIFTS)) {
+        if (isNightCoverageSatisfied(supplyMap) || !hasNightCriticalDeficit(deficitMap)) {
           break;
         }
 
@@ -907,7 +1030,8 @@ document.addEventListener('DOMContentLoaded', function () {
           deficitMap,
           dayIndex,
           NIGHT_SHIFTS,
-          daysInMonth
+          daysInMonth,
+          supplyMap
         );
         if (!bestMove) {
           break;
@@ -977,7 +1101,8 @@ document.addEventListener('DOMContentLoaded', function () {
           deficitMap,
           dayIndex,
           DAYTIME_SHIFTS,
-          daysInMonth
+          daysInMonth,
+          supplyMap
         );
         if (!bestMove) {
           break;
