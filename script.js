@@ -38,6 +38,11 @@ document.addEventListener('DOMContentLoaded', function () {
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
 
+  const today = new Date();
+  const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  const DEFAULT_YEAR = nextMonthDate.getFullYear();
+  const DEFAULT_MONTH = nextMonthDate.getMonth() + 1;
+
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
   const WEEKDAY_INDEX_MAP = {
     sun: '0',
@@ -248,22 +253,29 @@ document.addEventListener('DOMContentLoaded', function () {
     for (let i = -1; i <= 2; i++) {
       const year = currentYear + i;
       const option = document.createElement('option');
-      option.value = year;
+      option.value = String(year);
       option.textContent = `${year}年`;
-      if (i === 0) option.selected = true;
+      if (year === DEFAULT_YEAR) option.selected = true;
       yearSelect.appendChild(option);
+    }
+
+    if (!yearSelect.value) {
+      yearSelect.value = String(DEFAULT_YEAR);
     }
   }
 
   function populateMonths() {
     if (!monthSelect) return;
-    const currentMonth = new Date().getMonth() + 1;
     for (let month = 1; month <= 12; month++) {
       const option = document.createElement('option');
-      option.value = month;
+      option.value = String(month);
       option.textContent = `${month}月`;
-      if (month === currentMonth) option.selected = true;
+      if (month === DEFAULT_MONTH) option.selected = true;
       monthSelect.appendChild(option);
+    }
+
+    if (!monthSelect.value) {
+      monthSelect.value = String(DEFAULT_MONTH);
     }
   }
 
