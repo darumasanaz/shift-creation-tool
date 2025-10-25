@@ -509,6 +509,26 @@ document.addEventListener('DOMContentLoaded', function () {
     cellRecord.isLocked = true;
   }
 
+  function isFiniteNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value);
+  }
+
+  function isWorkingAssignment(value) {
+    return value && value !== '休み';
+  }
+
+  function countConsecutiveWorkdays(record, dayIndex) {
+    let consecutive = 0;
+    for (let back = dayIndex - 1; back >= 0; back--) {
+      const previous = record.cells[back];
+      if (!previous || !isWorkingAssignment(previous.assignment)) {
+        break;
+      }
+      consecutive += 1;
+    }
+    return consecutive;
+  }
+
   function canAssignShift(record, dayIndex, shiftName) {
     if (!record) return false;
     const cellRecord = record.cells[dayIndex];
@@ -521,12 +541,12 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!available.includes(shiftName)) return false;
 
     const maxDays = record.staffObject.maxWorkingDays;
-    if (typeof maxDays === 'number' && !Number.isNaN(maxDays) && record.workdaysInMonth >= maxDays) {
+    if (isFiniteNumber(maxDays) && record.workdaysInMonth >= maxDays) {
       return false;
     }
 
     const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-    if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
+    if (isFiniteNumber(maxDaysPerWeek)) {
       const weeklyWorked = record.workdaysInWeek || 0;
       if (weeklyWorked >= maxDaysPerWeek) {
         return false;
@@ -536,7 +556,108 @@ document.addEventListener('DOMContentLoaded', function () {
     return true;
   }
 
-  function findBestAssignment(availableRecords, deficitMap, dayIndex) {
+  function collectEligibleRecords(staffRecords, dayIndex, allowedShiftNames = null) {
+    return staffRecords.filter(record => {
+      const cell = record.cells[dayIndex];
+      if (!cell || cell.isLocked || cell.assignment) {
+        return false;
+      }
+
+      const available = Array.isArray(record.staffObject.availableShifts)
+        ? record.staffObject.availableShifts
+        : [];
+      const candidateShifts = allowedShiftNames
+        ? available.filter(name => allowedShiftNames.includes(name))
+        : available.slice();
+      if (!candidateShifts.length) {
+        return false;
+      }
+
+      const maxDays = record.staffObject.maxWorkingDays;
+      if (isFiniteNumber(maxDays) && record.workdaysInMonth >= maxDays) {
+        return false;
+      }
+
+      const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
+      if (isFiniteNumber(maxDaysPerWeek) && record.workdaysInWeek >= maxDaysPerWeek) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  function collectAssignmentsForDay(staffRecords, dayIndex) {
+    const assignments = [];
+    staffRecords.forEach(record => {
+      const cell = record.cells[dayIndex];
+      if (!cell || !isWorkingAssignment(cell.assignment)) {
+        return;
+      }
+
+      const shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === cell.assignment);
+      if (!shiftDefinition) {
+        return;
+      }
+
+      assignments.push({
+        staff: record.staffObject,
+        shift: shiftDefinition,
+        record,
+      });
+    });
+    return assignments;
+  }
+
+  function resetWorkCounters(staffRecords) {
+    staffRecords.forEach(record => {
+      record.workdaysInMonth = 0;
+      record.workdaysInWeek = 0;
+    });
+  }
+
+  function hasPositiveDeficitForShifts(deficitMap, shiftNames) {
+    return shiftNames.some(shiftName => {
+      const definition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
+      if (!definition) return false;
+      for (let hour = definition.start; hour < definition.end; hour++) {
+        if ((deficitMap[hour % 24] || 0) > 0) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  function enforceConsecutiveRest(staffRecords, daysInMonth) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      staffRecords.forEach(record => {
+        let consecutive = 0;
+        for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
+          const cell = record.cells[dayIndex];
+          if (!cell) continue;
+
+          if (cell.assignment === '休み') {
+            consecutive = 0;
+            continue;
+          }
+
+          consecutive += 1;
+          if (consecutive > MAX_CONSECUTIVE_WORKDAYS) {
+            if (!cell.isLocked || cell.assignment !== '休み') {
+              markForcedRest(cell);
+              changed = true;
+            }
+            consecutive = 0;
+          }
+        }
+      });
+    }
+  }
+
+  function findBestAssignment(availableRecords, deficitMap, dayIndex, allowedShiftNames = null) {
     if (!Array.isArray(availableRecords) || !availableRecords.length) {
       return null;
     }
@@ -551,23 +672,19 @@ document.addEventListener('DOMContentLoaded', function () {
         : [];
       if (!available.length) return;
 
+      const candidateShifts = allowedShiftNames
+        ? available.filter(name => allowedShiftNames.includes(name))
+        : available.slice();
+      if (!candidateShifts.length) return;
+
       const prevAssignment =
         typeof dayIndex === 'number' && dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment || '' : '';
       const prevWasNight = prevAssignment && NIGHT_SHIFTS.includes(prevAssignment);
       const prevWasLateDay = prevAssignment === '日勤A' || prevAssignment === '日勤B';
 
-      let consecutiveWorkdays = 0;
-      if (typeof dayIndex === 'number' && dayIndex > 0) {
-        for (let back = dayIndex - 1; back >= 0; back--) {
-          const previousCell = record.cells[back];
-          if (!previousCell || !previousCell.assignment || previousCell.assignment === '休み') {
-            break;
-          }
-          consecutiveWorkdays += 1;
-        }
-      }
+      const consecutiveWorkdays = typeof dayIndex === 'number' ? countConsecutiveWorkdays(record, dayIndex) : 0;
 
-      available.forEach(shiftName => {
+      candidateShifts.forEach(shiftName => {
         const shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
         if (!shiftDefinition) return;
 
@@ -584,6 +701,16 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
+        const maxDays = record.staffObject.maxWorkingDays;
+        if (isFiniteNumber(maxDays) && record.workdaysInMonth + 1 > maxDays) {
+          return;
+        }
+
+        const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
+        if (isFiniteNumber(maxDaysPerWeek) && record.workdaysInWeek + 1 > maxDaysPerWeek) {
+          return;
+        }
+
         let score = 0;
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
           const deficit = deficitMap[hour % 24] || 0;
@@ -597,7 +724,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const goal = record.minWorkdaysGoal;
-        if (typeof goal === 'number' && !Number.isNaN(goal)) {
+        if (isFiniteNumber(goal)) {
           const currentWork = record.workdaysInMonth || 0;
           const remainingToGoal = goal - currentWork;
           if (remainingToGoal > 0) {
@@ -692,13 +819,13 @@ document.addEventListener('DOMContentLoaded', function () {
         cells,
         workdaysInMonth: 0,
         workdaysInWeek: 0,
-        minWorkdaysGoal:
-          typeof staff.maxWorkingDays === 'number' && !Number.isNaN(staff.maxWorkingDays)
-            ? Math.ceil(Math.max(staff.maxWorkingDays * MIN_WORKDAY_GOAL_RATIO, 0))
-            : null,
+        minWorkdaysGoal: isFiniteNumber(staff.maxWorkingDays)
+          ? Math.ceil(Math.max(staff.maxWorkingDays * MIN_WORKDAY_GOAL_RATIO, 0))
+          : null,
       };
     });
 
+    // Phase 1: establish rest blocks from fixed and requested holidays
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
         if (record.fixedHolidays.includes(String(cellRecord.dayOfWeek))) {
@@ -716,6 +843,10 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
+    enforceConsecutiveRest(staffRecords, daysInMonth);
+
+    // Phase 2: allocate night shifts first
+    resetWorkCounters(staffRecords);
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
       const currentDate = new Date(year, month - 1, day);
@@ -727,35 +858,72 @@ document.addEventListener('DOMContentLoaded', function () {
         });
       }
 
-      staffRecords.forEach(record => {
-        const cellRecord = record.cells[dayIndex];
-        if (!cellRecord || cellRecord.isLocked) {
-          return;
+      const dayType = getDayType(dayOfWeek);
+      const needsMap = createHourlyNeedsMap(dayType);
+      let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
+      let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
+
+      while (true) {
+        const deficitMap = calculateDeficitMap(needsMap, supplyMap);
+        if (!hasPositiveDeficitForShifts(deficitMap, NIGHT_SHIFTS)) {
+          break;
         }
 
-        const prevAssignment = dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment : '';
-        if (prevAssignment && NIGHT_SHIFTS.includes(prevAssignment)) {
-          markNightShiftRest(cellRecord);
-          return;
+        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, NIGHT_SHIFTS);
+        if (!availableRecords.length) {
+          break;
         }
 
-        let consecutiveWorkdays = 0;
-        for (let back = dayIndex - 1; back >= 0; back--) {
-          const previous = record.cells[back];
-          if (!previous || !previous.assignment || previous.assignment === '休み') {
-            break;
+        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex, NIGHT_SHIFTS);
+        if (!bestMove) {
+          break;
+        }
+
+        const { staffRecord, shift } = bestMove;
+        if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
+          markForcedRest(staffRecord.cells[dayIndex]);
+          continue;
+        }
+
+        assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
+        staffRecord.workdaysInMonth += 1;
+        staffRecord.workdaysInWeek += 1;
+
+        assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
+        supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
+
+        const nextIndex = dayIndex + 1;
+        if (nextIndex < daysInMonth) {
+          const nextCell = staffRecord.cells[nextIndex];
+          if (nextCell && !nextCell.isLocked) {
+            markNightShiftRest(nextCell);
           }
-          consecutiveWorkdays += 1;
         }
+      }
+    }
 
-        if (consecutiveWorkdays >= MAX_CONSECUTIVE_WORKDAYS) {
-          markForcedRest(cellRecord);
-        }
-      });
+    // Phase 3: cover daytime gaps with remaining capacity
+    resetWorkCounters(staffRecords);
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
+
+      if (dayOfWeek === 0) {
+        staffRecords.forEach(record => {
+          record.workdaysInWeek = 0;
+        });
+      }
 
       const dayType = getDayType(dayOfWeek);
       const needsMap = createHourlyNeedsMap(dayType);
-      const assignedShiftsThisDay = [];
+      let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
+
+      assignedShiftsThisDay.forEach(entry => {
+        entry.record.workdaysInMonth += 1;
+        entry.record.workdaysInWeek += 1;
+      });
+
       let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
 
       while (true) {
@@ -765,79 +933,32 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const availableRecords = staffRecords.filter(record => {
-          const cellRecord = record.cells[dayIndex];
-          if (!cellRecord || cellRecord.isLocked || cellRecord.assignment) {
-            return false;
-          }
-
-          const prevAssignment = dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment : '';
-          if (prevAssignment && NIGHT_SHIFTS.includes(prevAssignment)) {
-            return false;
-          }
-
-          let consecutiveWorkdays = 0;
-          for (let back = dayIndex - 1; back >= 0; back--) {
-            const previous = record.cells[back];
-            if (!previous || !previous.assignment || previous.assignment === '休み') {
-              break;
-            }
-            consecutiveWorkdays += 1;
-          }
-          if (consecutiveWorkdays >= MAX_CONSECUTIVE_WORKDAYS) {
-            return false;
-          }
-
-          const maxDays = record.staffObject.maxWorkingDays;
-          if (typeof maxDays === 'number' && !Number.isNaN(maxDays) && record.workdaysInMonth >= maxDays) {
-            return false;
-          }
-
-          const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-          if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
-            if (record.workdaysInWeek >= maxDaysPerWeek) {
-              return false;
-            }
-          }
-
-          const available = Array.isArray(record.staffObject.availableShifts)
-            ? record.staffObject.availableShifts
-            : [];
-          const hasAnyShift = available.some(shiftName =>
-            SHIFT_DEFINITIONS.some(def => def.name === shiftName)
-          );
-          return hasAnyShift;
-        });
-
+        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, DAYTIME_SHIFTS);
         if (!availableRecords.length) {
           break;
         }
 
-        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex);
+        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex, DAYTIME_SHIFTS);
         if (!bestMove) {
           break;
         }
 
-        const targetRecord = bestMove.staffRecord;
-        const shiftDefinition = bestMove.shift;
-
-        if (!canAssignShift(targetRecord, dayIndex, shiftDefinition.name)) {
-          markForcedRest(targetRecord.cells[dayIndex]);
+        const { staffRecord, shift } = bestMove;
+        if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
+          markForcedRest(staffRecord.cells[dayIndex]);
           continue;
         }
 
-        assignShiftToCell(targetRecord.cells[dayIndex], shiftDefinition.name);
-        targetRecord.workdaysInMonth += 1;
-        targetRecord.workdaysInWeek += 1;
+        assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
+        staffRecord.workdaysInMonth += 1;
+        staffRecord.workdaysInWeek += 1;
 
-        assignedShiftsThisDay.push({
-          staff: targetRecord.staffObject,
-          shift: shiftDefinition,
-        });
+        assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
       }
     }
 
+    // Final rendering: push schedule back to DOM
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
         const content = cellRecord.assignment || '';
@@ -1010,6 +1131,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     saveState();
   }
+  renderHeader();
 
   loadState();
   const targetChanged = setNextMonthTarget();
