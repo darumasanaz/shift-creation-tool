@@ -37,8 +37,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
-  const MIN_GOAL_RATIO_DAYONLY = 0.7;
-  const MIN_GOAL_BONUS_WEIGHT_DAYONLY = 16;
+  const MIN_WORKDAY_GOAL_RATIO = 0;
+  const MIN_GOAL_BONUS_WEIGHT = 10;
   const FAIR_WEIGHTS = {
     progressPenalty: 4,
     monthOver: 2,
@@ -47,18 +47,17 @@ document.addEventListener('DOMContentLoaded', function () {
   };
   const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
   const EVENING_HOURS = [18, 19, 20];
-  const WEIGHT_DAYB_CORE = 14;
-  const WEIGHT_LATE_CORE = 16;
-  const WEIGHT_DAY_DEFICIT = 10;
-  const WEIGHT_DAYB_DEFICIT = 14;
-  const PENALTY_GEN_NIGHTS = 10;
+  const WEIGHT_DAYB_CORE = 10;
+  const WEIGHT_LATE_CORE = 12;
+  const WEIGHT_DAY_DEFICIT = 8;
+  const WEIGHT_DAYB_DEFICIT = 10;
+  const PENALTY_GEN_NIGHTS = 8;
   const DAY_OVERSUP_ALLOW = 1;
-  const DAY_OVERSUP_PENALTY = 6;
+  const DAY_OVERSUP_PENALTY = 5;
   const GENERALIST_NIGHT_THRESHOLD = 6;
   const NIGHT_SPECIALIST_BONUS = 6;
   const GENERALIST_NIGHT_ROLE_PENALTY = 4;
   const NIGHT_PRIORITY_ORDER = ['夜勤C', '夜勤B', '夜勤A'];
-  const PART_TIMER_BONUS = 8;
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
@@ -687,94 +686,6 @@ document.addEventListener('DOMContentLoaded', function () {
     return deficit;
   }
 
-  function reportStaffLimitViolations(staffRecords) {
-    if (!Array.isArray(staffRecords) || !staffRecords.length) {
-      return;
-    }
-
-    const shiftViolations = [];
-    const monthlyLimitViolations = [];
-    const weeklyLimitViolations = [];
-
-    staffRecords.forEach(record => {
-      if (!record || !record.staffObject || !Array.isArray(record.cells)) {
-        return;
-      }
-
-      const allowedShifts = new Set(
-        Array.isArray(record.staffObject.availableShifts)
-          ? record.staffObject.availableShifts.filter(shift => SHIFT_PATTERNS.includes(shift))
-          : []
-      );
-      const maxMonthly = record.staffObject.maxWorkingDays;
-      const maxWeekly = record.staffObject.maxDaysPerWeek;
-
-      let workedInMonth = 0;
-      let weekIndex = 0;
-      const weeklyCounts = new Map();
-
-      record.cells.forEach((cell, dayIndex) => {
-        if (!cell) {
-          return;
-        }
-
-        if (dayIndex > 0 && cell.dayOfWeek === 0) {
-          weekIndex += 1;
-        }
-
-        if (!isWorkingAssignment(cell.assignment)) {
-          return;
-        }
-
-        workedInMonth += 1;
-
-        if (allowedShifts.size > 0 && !allowedShifts.has(cell.assignment)) {
-          shiftViolations.push({
-            staff: record.staffObject.name,
-            day: dayIndex + 1,
-            assignment: cell.assignment,
-          });
-        }
-
-        if (isFiniteNumber(maxWeekly)) {
-          const key = weekIndex;
-          weeklyCounts.set(key, (weeklyCounts.get(key) || 0) + 1);
-        }
-      });
-
-      if (isFiniteNumber(maxMonthly) && workedInMonth > maxMonthly) {
-        monthlyLimitViolations.push({
-          staff: record.staffObject.name,
-          assigned: workedInMonth,
-          limit: maxMonthly,
-        });
-      }
-
-      if (isFiniteNumber(maxWeekly)) {
-        weeklyCounts.forEach((count, key) => {
-          if (count > maxWeekly) {
-            weeklyLimitViolations.push({
-              staff: record.staffObject.name,
-              week: key + 1,
-              assigned: count,
-              limit: maxWeekly,
-            });
-          }
-        });
-      }
-    });
-
-    if (shiftViolations.length) {
-      console.warn('Shift eligibility violations detected:', shiftViolations);
-    }
-    if (monthlyLimitViolations.length) {
-      console.warn('Monthly workday limit violations detected:', monthlyLimitViolations);
-    }
-    if (weeklyLimitViolations.length) {
-      console.warn('Weekly workday limit violations detected:', weeklyLimitViolations);
-    }
-  }
-
   function buildDailyCoverageMap(staffRecords, dayIndex) {
     const map = new Array(24).fill(0);
     const currentAssignments = collectAssignmentsForDay(staffRecords, dayIndex);
@@ -916,10 +827,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     console.info(
-      `Daytime (07-17) shortages (staff-hours): ${daytimeShortageSlots}, oversupply beyond need + ${DAY_OVERSUP_ALLOW} (staff-hours): ${daytimeOversupplySlots}, night coverage warnings: ${nightViolations}`
+      `Daytime shortages (staff-hours): ${daytimeShortageSlots}, oversupply beyond need + ${DAY_OVERSUP_ALLOW} (staff-hours): ${daytimeOversupplySlots}, night coverage warnings: ${nightViolations}`
     );
-
-    reportStaffLimitViolations(staffRecords);
   }
 
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
@@ -1118,8 +1027,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
       const roleCategory = record.roleCategory || inferRoleCategory(record.staffObject);
       record.roleCategory = roleCategory;
-      const recordCanWorkNight = available.some(name => NIGHT_SHIFTS.includes(name));
-      const isDayOnlyStaff = record.isDayOnly === true || !recordCanWorkNight;
 
       let candidateShifts = allowedShiftNames
         ? available.filter(name => allowedShiftNames.includes(name))
@@ -1183,57 +1090,65 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
-      let score = 0;
-      let dayDeficitCovered = false;
-      let dayOversupplyPenalty = 0;
-      let nightContribution = 0;
-      let coversLateDeficit = false;
+        let score = 0;
+        let dayDeficitCovered = false;
+        let daybDeficitWeight = 0;
+        let dayOversupplyPenalty = 0;
+        let lateCoreBonus = 0;
+        let nightContribution = 0;
 
-      for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
-        const normalizedHour = ((hour % 24) + 24) % 24;
-        const isNextMorning = hour >= 24;
-        const hourDayType = isNextMorning ? nextDayType : dayType;
-        const { min } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
-        const currentCoverage = currentSupplyMap ? currentSupplyMap[normalizedHour] || 0 : 0;
-        const afterCoverage = currentCoverage + 1;
-        const deficitValue = Math.max(0, deficitMap[normalizedHour] || 0);
-        const isDaytimeHour = !isNextMorning && normalizedHour >= 7 && normalizedHour <= 17;
-        const isLateWindow = !isNextMorning && normalizedHour >= 16 && normalizedHour <= 18;
-        const isNightWindow = !isDaytimeHour && (normalizedHour >= 18 || isNextMorning || normalizedHour <= 6);
+        for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
+          const normalizedHour = ((hour % 24) + 24) % 24;
+          const isNextMorning = hour >= 24;
+          const hourDayType = isNextMorning ? nextDayType : dayType;
+          const { min } = getMinMaxForHour(hourDayType, normalizedHour, isNextMorning);
+          const currentCoverage = currentSupplyMap ? currentSupplyMap[normalizedHour] || 0 : 0;
+          const afterCoverage = currentCoverage + 1;
+          const deficitValue = Math.max(0, deficitMap[normalizedHour] || 0);
+          const isDaytimeHour = !isNextMorning && normalizedHour >= 7 && normalizedHour <= 17;
+          const isLateWindow = !isNextMorning && normalizedHour >= 16 && normalizedHour <= 18;
+          const isNightWindow = !isDaytimeHour && (normalizedHour >= 18 || isNextMorning || normalizedHour <= 6);
 
-        if (isDaytimeHour) {
-          if (currentCoverage < min) {
-            const shortage = min - currentCoverage;
-            dayDeficitCovered = true;
-            const dayWeight = shiftDefinition.name === '日勤B' ? WEIGHT_DAYB_DEFICIT : WEIGHT_DAY_DEFICIT;
-            score += dayWeight * shortage;
-          }
+          if (isDaytimeHour) {
+            if (currentCoverage < min) {
+              const shortage = min - currentCoverage;
+              dayDeficitCovered = true;
+              score += WEIGHT_DAY_DEFICIT * shortage;
+              if (shiftDefinition.name === '日勤B') {
+                daybDeficitWeight += WEIGHT_DAYB_DEFICIT * shortage;
+              }
+            }
 
-          const overAmount = afterCoverage - (min + DAY_OVERSUP_ALLOW);
-          if (overAmount > 0) {
-            dayOversupplyPenalty += DAY_OVERSUP_PENALTY * overAmount;
-          }
+            const overAmount = afterCoverage - (min + DAY_OVERSUP_ALLOW);
+            if (overAmount > 0) {
+              dayOversupplyPenalty += DAY_OVERSUP_PENALTY * overAmount;
+            }
 
-          if (shiftDefinition.name === '遅番' && isLateWindow && deficitValue > 0) {
-            coversLateDeficit = true;
-          }
-        } else if (isNightWindow && min > 0) {
-          const improvement = Math.min(afterCoverage, min) - currentCoverage;
-          if (improvement > 0) {
-            const weight = normalizedHour >= 21 || isNextMorning ? 50 : 25;
-            nightContribution += improvement * weight;
-          }
-          if (deficitValue > 0) {
-            nightContribution += deficitValue * 5;
+            if (
+              !lateCoreBonus &&
+              shiftDefinition.name === '遅番' &&
+              roleCategory === ROLE_CATEGORIES.lateCore &&
+              isLateWindow &&
+              deficitValue > 0
+            ) {
+              lateCoreBonus = WEIGHT_LATE_CORE;
+            }
+          } else if (isNightWindow && min > 0) {
+            const improvement = Math.min(afterCoverage, min) - currentCoverage;
+            if (improvement > 0) {
+              const weight = normalizedHour >= 21 || isNextMorning ? 50 : 25;
+              nightContribution += improvement * weight;
+            }
+            if (deficitValue > 0) {
+              nightContribution += deficitValue * 5;
+            }
           }
         }
 
+        score += daybDeficitWeight;
         score -= dayOversupplyPenalty;
+        score += lateCoreBonus;
         score += nightContribution;
-
-        if (shiftDefinition.name === '遅番' && coversLateDeficit) {
-          score += WEIGHT_LATE_CORE;
-        }
 
         if (shiftDefinition.name === '日勤B' && roleCategory === ROLE_CATEGORIES.daybCore && dayDeficitCovered) {
           score += WEIGHT_DAYB_CORE;
@@ -1257,12 +1172,6 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
 
-        if (!NIGHT_SHIFTS.includes(shiftDefinition.name)) {
-          if (isFiniteNumber(maxDays) && record.workdaysInMonth < maxDays) {
-            score += PART_TIMER_BONUS;
-          }
-        }
-
         const afterMonth = (record.workdaysInMonth || 0) + 1;
         const target = isFiniteNumber(record.targetWorkdays)
           ? record.targetWorkdays
@@ -1273,16 +1182,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (afterMonth > target) {
           score -= FAIR_WEIGHTS.monthOver * (afterMonth - target);
-        }
-
-        if (isDayOnlyStaff) {
-          const minGoal = record.minWorkdaysGoal;
-          if (isFiniteNumber(minGoal)) {
-            const remainingGoalBefore = Math.max(0, minGoal - (record.workdaysInMonth || 0));
-            if (remainingGoalBefore > 0) {
-              score += MIN_GOAL_BONUS_WEIGHT_DAYONLY * remainingGoalBefore;
-            }
-          }
         }
 
         const weekAfter = (record.workdaysInWeek || 0) + 1;
@@ -1381,17 +1280,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
       tableBody.appendChild(row);
 
-      const availableShifts = Array.isArray(staff.availableShifts)
-        ? staff.availableShifts.filter(shift => SHIFT_PATTERNS.includes(shift))
-        : [];
-      const canWorkNight = availableShifts.some(shift => NIGHT_SHIFTS.includes(shift));
-      const isDayOnlyStaff = availableShifts.length > 0 && !canWorkNight;
-      const roleCategory = inferRoleCategory(staff);
-      const minWorkdaysGoal =
-        isDayOnlyStaff && isFiniteNumber(staff.maxWorkingDays)
-          ? Math.round(staff.maxWorkingDays * MIN_GOAL_RATIO_DAYONLY)
-          : null;
-
       return {
         staffObject: staff,
         rowElement: row,
@@ -1400,12 +1288,11 @@ document.addEventListener('DOMContentLoaded', function () {
         workdaysInMonth: 0,
         workdaysInWeek: 0,
         nightShiftsAssigned: 0,
-        roleCategory,
+        roleCategory: inferRoleCategory(staff),
         targetWorkdays: isFiniteNumber(staff.maxWorkingDays)
           ? staff.maxWorkingDays
           : Math.ceil(daysInMonth * 0.55),
-        minWorkdaysGoal,
-        isDayOnly: isDayOnlyStaff,
+        minWorkdaysGoal: null,
       };
     });
 
