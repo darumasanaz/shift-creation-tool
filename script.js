@@ -66,6 +66,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const modalShifts = document.getElementById('modal-shifts');
   const modalWeekdays = document.getElementById('modal-weekdays');
   const modalMaxDays = document.getElementById('modal-max-days');
+  const modalMaxDaysPerWeek = document.getElementById('modal-max-days-per-week');
   const modalSaveBtn = document.getElementById('modal-save-btn');
   const modalCancelBtn = document.getElementById('modal-cancel-btn');
 
@@ -105,10 +106,19 @@ document.addEventListener('DOMContentLoaded', function () {
               ? item.fixedHolidays.map(value => String(value))
               : [];
             let maxWorkingDays = null;
-            if (item.maxWorkingDays === null) {
-              maxWorkingDays = null;
-            } else if (typeof item.maxWorkingDays === 'number' && !Number.isNaN(item.maxWorkingDays)) {
-              maxWorkingDays = item.maxWorkingDays;
+            if (item.maxWorkingDays != null && item.maxWorkingDays !== '') {
+              const parsedMaxWorking = Number(item.maxWorkingDays);
+              if (Number.isFinite(parsedMaxWorking)) {
+                maxWorkingDays = parsedMaxWorking;
+              }
+            }
+
+            let maxDaysPerWeek = null;
+            if (item.maxDaysPerWeek != null && item.maxDaysPerWeek !== '') {
+              const parsedWeekly = Number(item.maxDaysPerWeek);
+              if (Number.isFinite(parsedWeekly)) {
+                maxDaysPerWeek = parsedWeekly;
+              }
             }
 
             return {
@@ -117,6 +127,7 @@ document.addEventListener('DOMContentLoaded', function () {
               availableShifts: available,
               fixedHolidays,
               maxWorkingDays,
+              maxDaysPerWeek,
             };
           });
         }
@@ -162,6 +173,7 @@ document.addEventListener('DOMContentLoaded', function () {
       availableShifts: [...SHIFT_PATTERNS],
       fixedHolidays: [],
       maxWorkingDays: null,
+      maxDaysPerWeek: null,
     };
   }
 
@@ -435,6 +447,15 @@ document.addEventListener('DOMContentLoaded', function () {
       return false;
     }
 
+    const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
+    if (
+      typeof maxDaysPerWeek === 'number' &&
+      !Number.isNaN(maxDaysPerWeek) &&
+      record.weeklyWorkCount >= maxDaysPerWeek
+    ) {
+      return false;
+    }
+
     return true;
   }
 
@@ -482,6 +503,7 @@ document.addEventListener('DOMContentLoaded', function () {
         staffObject: staff,
         fixedHolidays: normalizeFixedHolidays(staff),
         workingDays: 0,
+        weeklyWorkCount: 0,
         nightShiftRestDays: new Set(),
         cells: cellRecords,
       };
@@ -510,6 +532,12 @@ document.addEventListener('DOMContentLoaded', function () {
       const dayIndex = day - 1;
       const currentDate = new Date(year, month - 1, day);
       const dayOfWeek = currentDate.getDay();
+
+      if (dayOfWeek === 0) {
+        staffRecords.forEach(record => {
+          record.weeklyWorkCount = 0;
+        });
+      }
 
       staffRecords.forEach(record => {
         const cellRecord = record.cells[dayIndex];
@@ -548,6 +576,16 @@ document.addEventListener('DOMContentLoaded', function () {
           markForcedRest(cellRecord);
           return;
         }
+
+        const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
+        if (
+          typeof maxDaysPerWeek === 'number' &&
+          !Number.isNaN(maxDaysPerWeek) &&
+          record.weeklyWorkCount >= maxDaysPerWeek
+        ) {
+          markForcedRest(cellRecord);
+          return;
+        }
       });
 
       const dayType = getDayType(dayOfWeek);
@@ -564,6 +602,7 @@ document.addEventListener('DOMContentLoaded', function () {
           const cellRecord = candidate.cells[dayIndex];
           assignShiftToCell(cellRecord, shift.name);
           candidate.workingDays += 1;
+          candidate.weeklyWorkCount += 1;
 
           if (NIGHT_SHIFTS.includes(shift.name)) {
             const nextDayIndex = dayIndex + 1;
@@ -630,6 +669,10 @@ document.addEventListener('DOMContentLoaded', function () {
       modalMaxDays.value = staff.maxWorkingDays != null ? staff.maxWorkingDays : '';
     }
 
+    if (modalMaxDaysPerWeek) {
+      modalMaxDaysPerWeek.value = staff.maxDaysPerWeek != null ? staff.maxDaysPerWeek : '';
+    }
+
     staffModal.style.display = 'flex';
   }
 
@@ -680,7 +723,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (modalMaxDays) {
       const maxDaysRaw = modalMaxDays.value.trim();
-      staff.maxWorkingDays = maxDaysRaw === '' ? null : Number(maxDaysRaw);
+      if (maxDaysRaw === '') {
+        staff.maxWorkingDays = null;
+      } else {
+        const parsedMaxDays = Number(maxDaysRaw);
+        staff.maxWorkingDays = Number.isFinite(parsedMaxDays) ? parsedMaxDays : null;
+      }
+    }
+
+    if (modalMaxDaysPerWeek) {
+      const maxDaysPerWeekRaw = modalMaxDaysPerWeek.value.trim();
+      if (maxDaysPerWeekRaw === '') {
+        staff.maxDaysPerWeek = null;
+      } else {
+        const parsedWeekly = Number(maxDaysPerWeekRaw);
+        staff.maxDaysPerWeek = Number.isFinite(parsedWeekly) ? parsedWeekly : null;
+      }
     }
 
     renderStaffList();
