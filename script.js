@@ -161,17 +161,42 @@ document.addEventListener('DOMContentLoaded', function () {
     renderDayoffList();
   }
 
-  function ensureTargetMonthInitialized() {
-    if (state.targetYear != null && state.targetMonth != null) {
+  function setNextMonthTarget() {
+    const today = new Date();
+    const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const nextYear = nextMonthDate.getFullYear();
+    const nextMonth = nextMonthDate.getMonth() + 1;
+
+    const changed = state.targetYear !== nextYear || state.targetMonth !== nextMonth;
+    state.targetYear = nextYear;
+    state.targetMonth = nextMonth;
+    return changed;
+  }
+
+  function updateDayoffDateBounds() {
+    if (!dayoffDateInput) return;
+
+    const year = state.targetYear;
+    const month = state.targetMonth;
+    if (year == null || month == null) {
+      dayoffDateInput.removeAttribute('min');
+      dayoffDateInput.removeAttribute('max');
       return;
     }
 
-    const today = new Date();
-    const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-    state.targetYear = nextMonthDate.getFullYear();
-    state.targetMonth = nextMonthDate.getMonth() + 1;
+    const paddedMonth = String(month).padStart(2, '0');
+    const start = `${year}-${paddedMonth}-01`;
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const end = `${year}-${paddedMonth}-${String(daysInMonth).padStart(2, '0')}`;
 
-    saveState();
+    dayoffDateInput.min = start;
+    dayoffDateInput.max = end;
+
+    if (dayoffDateInput.value) {
+      if (dayoffDateInput.value < start || dayoffDateInput.value > end) {
+        dayoffDateInput.value = '';
+      }
+    }
   }
 
   function generateStaffId() {
@@ -285,11 +310,13 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function renderHeader() {
-    const resultTable = document.querySelector('#result-area table');
-    if (!resultTable) return;
-
     const year = state.targetYear;
     const month = state.targetMonth;
+
+    updateDayoffDateBounds();
+
+    const resultTable = document.querySelector('#result-area table');
+    if (!resultTable) return;
     if (year == null || month == null) return;
 
     resultTable.innerHTML = '';
@@ -766,7 +793,10 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   loadState();
-  ensureTargetMonthInitialized();
+  const targetChanged = setNextMonthTarget();
+  if (targetChanged) {
+    saveState();
+  }
   renderHeader();
 
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
