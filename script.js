@@ -1131,6 +1131,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     saveState();
   }
+  renderHeader();
 
   loadState();
   const targetChanged = setNextMonthTarget();
