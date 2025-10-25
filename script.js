@@ -859,7 +859,7 @@ document.addEventListener('DOMContentLoaded', function () {
           const cell = record.cells[dayIndex];
           if (!cell) continue;
 
-          if (cell.assignment === '休み') {
+          if (!isWorkingAssignment(cell.assignment)) {
             consecutive = 0;
             continue;
           }
@@ -1103,8 +1103,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       });
     });
-
-    enforceConsecutiveRest(staffRecords, daysInMonth);
 
     // Phase 2: allocate night shifts first
     resetWorkCounters(staffRecords);
