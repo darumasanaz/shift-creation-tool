@@ -431,7 +431,7 @@ document.addEventListener('DOMContentLoaded', function () {
     cellRecord.cell.style.backgroundColor = '#e6f7ff';
   }
 
-  function canAssignShift(record, dayIndex, shiftName) {
+  function canAssignShift(record, dayIndex, shiftName, weeklyWorkdayCounts) {
     if (!record) return false;
     const cellRecord = record.cells[dayIndex];
     if (!cellRecord || cellRecord.isLockedOff) return false;
@@ -448,12 +448,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-    if (
-      typeof maxDaysPerWeek === 'number' &&
-      !Number.isNaN(maxDaysPerWeek) &&
-      record.weeklyWorkCount >= maxDaysPerWeek
-    ) {
-      return false;
+    if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
+      const weeklyWorked = weeklyWorkdayCounts[record.staffObject.id] || 0;
+      if (weeklyWorked >= maxDaysPerWeek) {
+        return false;
+      }
     }
 
     return true;
@@ -503,10 +502,14 @@ document.addEventListener('DOMContentLoaded', function () {
         staffObject: staff,
         fixedHolidays: normalizeFixedHolidays(staff),
         workingDays: 0,
-        weeklyWorkCount: 0,
         nightShiftRestDays: new Set(),
         cells: cellRecords,
       };
+    });
+
+    const weeklyWorkdayCounts = {};
+    staffRecords.forEach(record => {
+      weeklyWorkdayCounts[record.staffObject.id] = 0;
     });
 
     // Apply fixed holidays first.
@@ -535,7 +538,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       if (dayOfWeek === 0) {
         staffRecords.forEach(record => {
-          record.weeklyWorkCount = 0;
+          weeklyWorkdayCounts[record.staffObject.id] = 0;
         });
       }
 
@@ -578,13 +581,12 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-        if (
-          typeof maxDaysPerWeek === 'number' &&
-          !Number.isNaN(maxDaysPerWeek) &&
-          record.weeklyWorkCount >= maxDaysPerWeek
-        ) {
-          markForcedRest(cellRecord);
-          return;
+        if (typeof maxDaysPerWeek === 'number' && !Number.isNaN(maxDaysPerWeek)) {
+          const weeklyWorked = weeklyWorkdayCounts[record.staffObject.id] || 0;
+          if (weeklyWorked >= maxDaysPerWeek) {
+            markForcedRest(cellRecord);
+            return;
+          }
         }
       });
 
@@ -594,7 +596,9 @@ document.addEventListener('DOMContentLoaded', function () {
       SHIFT_DEFINITIONS.forEach(shift => {
         let remaining = requirements[shift.name] || 0;
         while (remaining > 0) {
-          const candidate = staffRecords.find(record => canAssignShift(record, dayIndex, shift.name));
+          const candidate = staffRecords.find(record =>
+            canAssignShift(record, dayIndex, shift.name, weeklyWorkdayCounts)
+          );
           if (!candidate) {
             break;
           }
@@ -602,7 +606,8 @@ document.addEventListener('DOMContentLoaded', function () {
           const cellRecord = candidate.cells[dayIndex];
           assignShiftToCell(cellRecord, shift.name);
           candidate.workingDays += 1;
-          candidate.weeklyWorkCount += 1;
+          weeklyWorkdayCounts[candidate.staffObject.id] =
+            (weeklyWorkdayCounts[candidate.staffObject.id] || 0) + 1;
 
           if (NIGHT_SHIFTS.includes(shift.name)) {
             const nextDayIndex = dayIndex + 1;
