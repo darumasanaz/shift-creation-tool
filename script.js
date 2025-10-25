@@ -544,14 +544,45 @@ document.addEventListener('DOMContentLoaded', function () {
     let bestMove = null;
 
     availableRecords.forEach(record => {
-      if (!record || !record.staffObject) return;
+      if (!record || !record.staffObject || !Array.isArray(record.cells)) return;
+
       const available = Array.isArray(record.staffObject.availableShifts)
         ? record.staffObject.availableShifts
         : [];
+      if (!available.length) return;
+
+      const prevAssignment =
+        typeof dayIndex === 'number' && dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment || '' : '';
+      const prevWasNight = prevAssignment && NIGHT_SHIFTS.includes(prevAssignment);
+      const prevWasLateDay = prevAssignment === '日勤A' || prevAssignment === '日勤B';
+
+      let consecutiveWorkdays = 0;
+      if (typeof dayIndex === 'number' && dayIndex > 0) {
+        for (let back = dayIndex - 1; back >= 0; back--) {
+          const previousCell = record.cells[back];
+          if (!previousCell || !previousCell.assignment || previousCell.assignment === '休み') {
+            break;
+          }
+          consecutiveWorkdays += 1;
+        }
+      }
 
       available.forEach(shiftName => {
         const shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
         if (!shiftDefinition) return;
+
+        if (prevWasLateDay && shiftDefinition.name === '早番') {
+          return;
+        }
+
+        if (prevWasNight) {
+          return;
+        }
+
+        const wouldBeConsecutive = consecutiveWorkdays + 1;
+        if (wouldBeConsecutive > MAX_CONSECUTIVE_WORKDAYS) {
+          return;
+        }
 
         let score = 0;
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
@@ -583,23 +614,6 @@ document.addEventListener('DOMContentLoaded', function () {
           const canWorkNight = available.some(name => NIGHT_SHIFTS.includes(name));
           if (!canWorkNight) {
             score += 30;
-          }
-        }
-
-        if (typeof dayIndex === 'number' && dayIndex > 0 && Array.isArray(record.cells)) {
-          const prevCell = record.cells[dayIndex - 1];
-          const prevAssignment = prevCell ? prevCell.assignment : '';
-          const yesterdayOff = prevAssignment === '休み';
-          if (yesterdayOff) {
-            score += 10;
-            if (dayIndex > 1) {
-              const twoDaysAgoCell = record.cells[dayIndex - 2];
-              const twoDaysAgoAssignment = twoDaysAgoCell ? twoDaysAgoCell.assignment : '';
-              const twoDayRest = twoDaysAgoAssignment === '休み';
-              if (twoDayRest) {
-                score += 20;
-              }
-            }
           }
         }
 
