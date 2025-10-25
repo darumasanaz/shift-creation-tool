@@ -37,8 +37,29 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
-  const MIN_WORKDAY_GOAL_RATIO = 0.7;
+  const MIN_WORKDAY_GOAL_RATIO = 0;
   const MIN_GOAL_BONUS_WEIGHT = 10;
+  const FAIR_WEIGHTS = {
+    progressPenalty: 4,
+    monthOver: 2,
+    weekRisk: 6,
+    streakNearMax: 2,
+  };
+  const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
+  const EVENING_HOURS = [18, 19, 20];
+  const HOUR_BOUNDS = (() => {
+    const bounds = new Array(24)
+      .fill(null)
+      .map(() => ({ min: 0, max: Number.POSITIVE_INFINITY }));
+    EVENING_HOURS.forEach(hour => {
+      bounds[hour] = { min: 2, max: 3 };
+    });
+    NIGHT_STRICT_HOURS.forEach(hour => {
+      bounds[hour] = { min: 2, max: 2 };
+    });
+    return bounds;
+  })();
+  const NIGHT_PRIORITY_ORDER = ['夜勤C', '夜勤B', '夜勤A'];
 
   const DAYTIME_SHIFTS = ['早番', '日勤A', '日勤B', '遅番'];
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
@@ -475,6 +496,126 @@ document.addEventListener('DOMContentLoaded', function () {
     return map;
   }
 
+  function getBoundsForHour(hour) {
+    if (hour == null) {
+      return { min: 0, max: Number.POSITIVE_INFINITY };
+    }
+    const normalized = ((hour % 24) + 24) % 24;
+    return HOUR_BOUNDS[normalized] || { min: 0, max: Number.POSITIVE_INFINITY };
+  }
+
+  function wouldExceedBounds(supplyMap, shiftDefinition) {
+    if (!Array.isArray(supplyMap) || !shiftDefinition) {
+      return false;
+    }
+    const start = shiftDefinition.start;
+    const end = shiftDefinition.end;
+    const normalizedEnd = end > start ? end : end + 24;
+    for (let hour = start; hour < normalizedEnd; hour++) {
+      const { max } = getBoundsForHour(hour);
+      if (Number.isFinite(max)) {
+        const current = supplyMap[hour % 24] || 0;
+        if (current + 1 > max) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function isHourCoveredByShift(shiftDefinition, targetHour) {
+    if (!shiftDefinition || targetHour == null) {
+      return false;
+    }
+    const start = shiftDefinition.start;
+    const end = shiftDefinition.end;
+    const normalizedEnd = end > start ? end : end + 24;
+    for (let hour = start; hour < normalizedEnd; hour++) {
+      if (hour % 24 === targetHour) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isStrictNightHour(hour) {
+    return NIGHT_STRICT_HOURS.includes(hour);
+  }
+
+  function isEveningHour(hour) {
+    return EVENING_HOURS.includes(hour);
+  }
+
+  function evaluateBoundsContribution(supplyMap, shiftDefinition) {
+    if (!Array.isArray(supplyMap) || !shiftDefinition) {
+      return 0;
+    }
+
+    let bonus = 0;
+    const start = shiftDefinition.start;
+    const end = shiftDefinition.end;
+    const normalizedEnd = end > start ? end : end + 24;
+
+    for (let hour = start; hour < normalizedEnd; hour++) {
+      const normalizedHour = hour % 24;
+      const { min, max } = getBoundsForHour(hour);
+      if (min === 0 && !Number.isFinite(max)) {
+        continue;
+      }
+
+      const before = supplyMap[normalizedHour] || 0;
+      const after = before + 1;
+
+      if (before < min) {
+        const improvement = Math.min(after, min) - before;
+        let weight = 10;
+        if (isStrictNightHour(normalizedHour)) {
+          weight = 50;
+        } else if (isEveningHour(normalizedHour)) {
+          weight = 25;
+        }
+        bonus += improvement * weight;
+      } else if (isEveningHour(normalizedHour) && before >= min && before < max) {
+        bonus += 5;
+      }
+    }
+
+    if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+      const priorityIndex = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
+      if (priorityIndex !== -1) {
+        bonus += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
+      }
+    }
+
+    return bonus;
+  }
+
+  function calculateNightCoverageNeeds(supplyMap) {
+    const status = {
+      strictBelowMin: false,
+      eveningBelowMin: false,
+    };
+    if (!Array.isArray(supplyMap)) {
+      return status;
+    }
+
+    NIGHT_STRICT_HOURS.forEach(hour => {
+      const { min } = getBoundsForHour(hour);
+      if ((supplyMap[hour] || 0) < min) {
+        status.strictBelowMin = true;
+      }
+    });
+
+    EVENING_HOURS.forEach(hour => {
+      const { min } = getBoundsForHour(hour);
+      if ((supplyMap[hour] || 0) < min) {
+        status.eveningBelowMin = true;
+      }
+    });
+
+    return status;
+  }
+
   function calculateDeficitMap(needsMap, supplyMap) {
     const deficit = new Array(24).fill(0);
     for (let hour = 0; hour < 24; hour++) {
@@ -485,6 +626,85 @@ document.addEventListener('DOMContentLoaded', function () {
       deficit[hour] = needValue - supplyValue;
     }
     return deficit;
+  }
+
+  function buildDailyCoverageMap(staffRecords, dayIndex) {
+    const map = new Array(24).fill(0);
+    const currentAssignments = collectAssignmentsForDay(staffRecords, dayIndex);
+    currentAssignments.forEach(entry => {
+      const shift = entry.shift;
+      if (!shift) return;
+      const start = shift.start;
+      const end = shift.end;
+      const normalizedEnd = end > start ? end : end + 24;
+      for (let hour = start; hour < normalizedEnd; hour++) {
+        if (hour >= 24) {
+          continue;
+        }
+        const normalizedHour = hour % 24;
+        map[normalizedHour] = (map[normalizedHour] || 0) + 1;
+      }
+    });
+
+    if (dayIndex > 0) {
+      const prevAssignments = collectAssignmentsForDay(staffRecords, dayIndex - 1);
+      prevAssignments.forEach(entry => {
+        const shift = entry.shift;
+        if (!shift) return;
+        const start = shift.start;
+        const end = shift.end;
+        const normalizedEnd = end > start ? end : end + 24;
+        for (let hour = start; hour < normalizedEnd; hour++) {
+          if (hour < 24) {
+            continue;
+          }
+          const normalizedHour = hour - 24;
+          if (normalizedHour >= 0 && normalizedHour < 24) {
+            map[normalizedHour] = (map[normalizedHour] || 0) + 1;
+          }
+        }
+      });
+    }
+
+    return map;
+  }
+
+  function validateCoverageBounds(staffRecords, daysInMonth) {
+    for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
+      const coverage = buildDailyCoverageMap(staffRecords, dayIndex);
+      const issues = [];
+
+      EVENING_HOURS.forEach(hour => {
+        const { min, max } = getBoundsForHour(hour);
+        const value = coverage[hour] || 0;
+        if (value < min || (Number.isFinite(max) && value > max)) {
+          issues.push({
+            hour,
+            expected: `${min}-${Number.isFinite(max) ? max : '∞'}`,
+            actual: value,
+          });
+        }
+      });
+
+      NIGHT_STRICT_HOURS.forEach(hour => {
+        if (dayIndex === 0 && hour < 7) {
+          return;
+        }
+        const { min } = getBoundsForHour(hour);
+        const value = coverage[hour] || 0;
+        if (value !== min) {
+          issues.push({
+            hour,
+            expected: `${min}`,
+            actual: value,
+          });
+        }
+      });
+
+      if (issues.length) {
+        console.warn(`Coverage bounds violated on day ${dayIndex + 1}:`, issues);
+      }
+    }
   }
 
   function markCellAsOff(cellRecord, backgroundColor = '#ffdcdc') {
@@ -657,7 +877,14 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  function findBestAssignment(availableRecords, deficitMap, dayIndex, allowedShiftNames = null) {
+  function findBestAssignment(
+    availableRecords,
+    deficitMap,
+    dayIndex,
+    allowedShiftNames = null,
+    daysInMonth = 30,
+    currentSupplyMap = null
+  ) {
     if (!Array.isArray(availableRecords) || !availableRecords.length) {
       return null;
     }
@@ -672,9 +899,21 @@ document.addEventListener('DOMContentLoaded', function () {
         : [];
       if (!available.length) return;
 
-      const candidateShifts = allowedShiftNames
+      let candidateShifts = allowedShiftNames
         ? available.filter(name => allowedShiftNames.includes(name))
         : available.slice();
+      if (
+        allowedShiftNames &&
+        allowedShiftNames.length &&
+        allowedShiftNames.every(name => NIGHT_SHIFTS.includes(name))
+      ) {
+        candidateShifts = candidateShifts.sort((a, b) => {
+          const aIndex = NIGHT_PRIORITY_ORDER.indexOf(a);
+          const bIndex = NIGHT_PRIORITY_ORDER.indexOf(b);
+          return (aIndex === -1 ? NIGHT_PRIORITY_ORDER.length : aIndex) -
+            (bIndex === -1 ? NIGHT_PRIORITY_ORDER.length : bIndex);
+        });
+      }
       if (!candidateShifts.length) return;
 
       const prevAssignment =
@@ -711,6 +950,10 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
+        if (currentSupplyMap && wouldExceedBounds(currentSupplyMap, shiftDefinition)) {
+          return;
+        }
+
         let score = 0;
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
           const deficit = deficitMap[hour % 24] || 0;
@@ -719,17 +962,34 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
 
-        if (score <= 0) {
-          return;
+        score += evaluateBoundsContribution(currentSupplyMap, shiftDefinition);
+
+        const afterMonth = (record.workdaysInMonth || 0) + 1;
+        const target = isFiniteNumber(record.targetWorkdays)
+          ? record.targetWorkdays
+          : Math.ceil(daysInMonth * 0.55);
+        const expected = Math.round(target * ((dayIndex + 1) / daysInMonth));
+        const progressOver = Math.max(0, afterMonth - expected);
+        score -= FAIR_WEIGHTS.progressPenalty * progressOver;
+
+        if (afterMonth > target) {
+          score -= FAIR_WEIGHTS.monthOver * (afterMonth - target);
         }
 
-        const goal = record.minWorkdaysGoal;
-        if (isFiniteNumber(goal)) {
-          const currentWork = record.workdaysInMonth || 0;
-          const remainingToGoal = goal - currentWork;
-          if (remainingToGoal > 0) {
-            score += remainingToGoal * MIN_GOAL_BONUS_WEIGHT;
+        const weekAfter = (record.workdaysInWeek || 0) + 1;
+        if (isFiniteNumber(maxDaysPerWeek)) {
+          const threshold = Math.max(1, maxDaysPerWeek - 1);
+          if (weekAfter > threshold) {
+            score -= FAIR_WEIGHTS.weekRisk * (weekAfter - threshold);
           }
+        }
+
+        if (wouldBeConsecutive >= MAX_CONSECUTIVE_WORKDAYS) {
+          score -= FAIR_WEIGHTS.streakNearMax * (wouldBeConsecutive - MAX_CONSECUTIVE_WORKDAYS + 1);
+        }
+
+        if (score <= 0) {
+          return;
         }
 
         const availableCount = available.length;
@@ -819,9 +1079,10 @@ document.addEventListener('DOMContentLoaded', function () {
         cells,
         workdaysInMonth: 0,
         workdaysInWeek: 0,
-        minWorkdaysGoal: isFiniteNumber(staff.maxWorkingDays)
-          ? Math.ceil(Math.max(staff.maxWorkingDays * MIN_WORKDAY_GOAL_RATIO, 0))
-          : null,
+        targetWorkdays: isFiniteNumber(staff.maxWorkingDays)
+          ? staff.maxWorkingDays
+          : Math.ceil(daysInMonth * 0.55),
+        minWorkdaysGoal: null,
       };
     });
 
@@ -865,16 +1126,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
       while (true) {
         const deficitMap = calculateDeficitMap(needsMap, supplyMap);
-        if (!hasPositiveDeficitForShifts(deficitMap, NIGHT_SHIFTS)) {
+        const nightStatus = calculateNightCoverageNeeds(supplyMap);
+        if (!nightStatus.strictBelowMin && !nightStatus.eveningBelowMin) {
           break;
         }
 
-        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, NIGHT_SHIFTS);
+        const allowedShifts = nightStatus.strictBelowMin ? NIGHT_SHIFTS : ['遅番'];
+        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, allowedShifts);
         if (!availableRecords.length) {
           break;
         }
 
-        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex, NIGHT_SHIFTS);
+        const bestMove = findBestAssignment(
+          availableRecords,
+          deficitMap,
+          dayIndex,
+          allowedShifts,
+          daysInMonth,
+          supplyMap
+        );
         if (!bestMove) {
           break;
         }
@@ -892,11 +1162,13 @@ document.addEventListener('DOMContentLoaded', function () {
         assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
 
-        const nextIndex = dayIndex + 1;
-        if (nextIndex < daysInMonth) {
-          const nextCell = staffRecord.cells[nextIndex];
-          if (nextCell && !nextCell.isLocked) {
-            markNightShiftRest(nextCell);
+        if (NIGHT_SHIFTS.includes(shift.name)) {
+          const nextIndex = dayIndex + 1;
+          if (nextIndex < daysInMonth) {
+            const nextCell = staffRecord.cells[nextIndex];
+            if (nextCell && !nextCell.isLocked) {
+              markNightShiftRest(nextCell);
+            }
           }
         }
       }
@@ -938,7 +1210,14 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const bestMove = findBestAssignment(availableRecords, deficitMap, dayIndex, DAYTIME_SHIFTS);
+        const bestMove = findBestAssignment(
+          availableRecords,
+          deficitMap,
+          dayIndex,
+          DAYTIME_SHIFTS,
+          daysInMonth,
+          supplyMap
+        );
         if (!bestMove) {
           break;
         }
@@ -957,6 +1236,8 @@ document.addEventListener('DOMContentLoaded', function () {
         supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
       }
     }
+
+    validateCoverageBounds(staffRecords, daysInMonth);
 
     // Final rendering: push schedule back to DOM
     staffRecords.forEach(record => {
