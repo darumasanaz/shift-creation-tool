@@ -228,6 +228,13 @@ document.addEventListener('DOMContentLoaded', function () {
         editButton.setAttribute('data-staff-id', staff.id);
         li.appendChild(editButton);
 
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'delete-btn';
+        deleteButton.textContent = '削除';
+        deleteButton.setAttribute('data-staff-id', staff.id);
+        li.appendChild(deleteButton);
+
         staffList.appendChild(li);
       }
 
@@ -668,6 +675,39 @@ document.addEventListener('DOMContentLoaded', function () {
   function handleStaffListClick(event) {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+    const deleteButton = target.closest('.delete-btn');
+    if (deleteButton) {
+      const staffId = deleteButton.getAttribute('data-staff-id');
+      if (!staffId) return;
+      const staff = state.staff.find(item => item.id === staffId);
+      if (!staff) return;
+
+      const confirmed = window.confirm(
+        `${staff.name}さんを本当に削除しますか？関連する希望休もすべて削除されます。`
+      );
+      if (!confirmed) return;
+
+      state.staff = state.staff.filter(item => item.id !== staffId);
+      state.dayoffs = state.dayoffs.filter(dayoff => {
+        if (dayoff.staffId) {
+          return dayoff.staffId !== staffId;
+        }
+        if (dayoff.staffName) {
+          return dayoff.staffName !== staff.name;
+        }
+        return true;
+      });
+
+      if (state.editingStaffId === staffId) {
+        closeStaffModal();
+      }
+
+      renderStaffList();
+      renderDayoffList();
+      saveState();
+      return;
+    }
+
     const editButton = target.closest('.edit-btn');
     if (!editButton) return;
     const staffId = editButton.getAttribute('data-staff-id');
