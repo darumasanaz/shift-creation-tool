@@ -38,11 +38,6 @@ document.addEventListener('DOMContentLoaded', function () {
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
 
-  const today = new Date();
-  const nextMonthDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-  const DEFAULT_YEAR = nextMonthDate.getFullYear();
-  const DEFAULT_MONTH = nextMonthDate.getMonth() + 1;
-
   const SHIFT_PATTERNS = SHIFT_DEFINITIONS.map(pattern => pattern.name);
   const WEEKDAY_INDEX_MAP = {
     sun: '0',
@@ -63,9 +58,6 @@ document.addEventListener('DOMContentLoaded', function () {
   const addDayoffButton = document.getElementById('add-dayoff-button');
   const dayoffList = document.getElementById('dayoff-list');
 
-  const yearSelect = document.getElementById('target-year');
-  const monthSelect = document.getElementById('target-month');
-
   const generateButton = document.getElementById('generate-btn');
 
   const staffModal = document.getElementById('staff-modal');
@@ -81,6 +73,8 @@ document.addEventListener('DOMContentLoaded', function () {
     staff: [],
     dayoffs: [],
     editingStaffId: null,
+    targetYear: null,
+    targetMonth: null,
   };
 
   function saveState() {
@@ -136,6 +130,17 @@ document.addEventListener('DOMContentLoaded', function () {
             }))
             .filter(dayoff => typeof dayoff.date === 'string');
         }
+
+        if (parsed.targetYear != null) {
+          const parsedYear = Number(parsed.targetYear);
+          state.targetYear = Number.isFinite(parsedYear) ? Math.trunc(parsedYear) : null;
+        }
+
+        if (parsed.targetMonth != null) {
+          const parsedMonth = Number(parsed.targetMonth);
+          const monthInt = Number.isFinite(parsedMonth) ? Math.trunc(parsedMonth) : null;
+          state.targetMonth = monthInt && monthInt >= 1 && monthInt <= 12 ? monthInt : null;
+        }
       }
     } catch (error) {
       console.error('Failed to load shift tool state:', error);
@@ -143,6 +148,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     renderStaffList();
     renderDayoffList();
+    renderHeader();
   }
 
   function generateStaffId() {
@@ -228,6 +234,22 @@ document.addEventListener('DOMContentLoaded', function () {
     });
     if (isDuplicate) return;
 
+    const [yearStr, monthStr] = date.split('-');
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+
+    if (!Number.isFinite(year) || !Number.isFinite(month)) return;
+
+    if (state.targetMonth == null) {
+      const yearInt = Math.trunc(year);
+      const monthInt = Math.trunc(month);
+      if (monthInt >= 1 && monthInt <= 12) {
+        state.targetYear = yearInt;
+        state.targetMonth = monthInt;
+        renderHeader();
+      }
+    }
+
     state.dayoffs.push({ staffId, staffName, date });
     renderDayoffList();
 
@@ -247,47 +269,15 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  function populateYears() {
-    if (!yearSelect) return;
-    const currentYear = new Date().getFullYear();
-    for (let i = -1; i <= 2; i++) {
-      const year = currentYear + i;
-      const option = document.createElement('option');
-      option.value = String(year);
-      option.textContent = `${year}年`;
-      if (year === DEFAULT_YEAR) option.selected = true;
-      yearSelect.appendChild(option);
-    }
-
-    if (!yearSelect.value) {
-      yearSelect.value = String(DEFAULT_YEAR);
-    }
-  }
-
-  function populateMonths() {
-    if (!monthSelect) return;
-    for (let month = 1; month <= 12; month++) {
-      const option = document.createElement('option');
-      option.value = String(month);
-      option.textContent = `${month}月`;
-      if (month === DEFAULT_MONTH) option.selected = true;
-      monthSelect.appendChild(option);
-    }
-
-    if (!monthSelect.value) {
-      monthSelect.value = String(DEFAULT_MONTH);
-    }
-  }
-
   function renderHeader() {
     const resultTable = document.querySelector('#result-area table');
     if (!resultTable) return;
-    resultTable.innerHTML = '';
 
-    if (!yearSelect || !monthSelect) return;
-    const year = parseInt(yearSelect.value, 10);
-    const month = parseInt(monthSelect.value, 10);
-    if (!year || !month) return;
+    const year = state.targetYear;
+    const month = state.targetMonth;
+    if (year == null || month == null) return;
+
+    resultTable.innerHTML = '';
 
     const daysInMonth = new Date(year, month, 0).getDate();
     const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
@@ -449,13 +439,16 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function generateShift() {
+    if (state.targetYear == null || state.targetMonth == null) return;
+
+    renderHeader();
+
     const tableBody = document.getElementById('result-body');
-    if (!tableBody || !yearSelect || !monthSelect) return;
+    if (!tableBody) return;
     tableBody.innerHTML = '';
 
-    const year = parseInt(yearSelect.value, 10);
-    const month = parseInt(monthSelect.value, 10);
-    if (!year || !month) return;
+    const year = state.targetYear;
+    const month = state.targetMonth;
 
     const daysInMonth = new Date(year, month, 0).getDate();
     const staffRecords = state.staff.map(staff => {
@@ -702,8 +695,6 @@ document.addEventListener('DOMContentLoaded', function () {
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
   if (addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
-  if (yearSelect) yearSelect.addEventListener('change', renderHeader);
-  if (monthSelect) monthSelect.addEventListener('change', renderHeader);
   if (generateButton) generateButton.addEventListener('click', generateShift);
   if (modalSaveBtn) modalSaveBtn.addEventListener('click', handleModalSave);
   if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeStaffModal);
@@ -715,7 +706,4 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  populateYears();
-  populateMonths();
-  renderHeader();
 });
