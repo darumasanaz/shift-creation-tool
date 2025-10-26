@@ -643,8 +643,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth) {
     const bands = [
-      { hours: [9, 15], allowed: ['日勤A', '日勤B'] },
       { hours: [7, 9], allowed: ['早番', '日勤A'] },
+      { hours: [9, 15], allowed: ['日勤A', '日勤B'] },
       { hours: [16, 18], allowed: ['日勤A', '遅番'] },
     ];
     let assigned = collectAssignmentsForDay(staffRecords, dayIndex);
@@ -1017,6 +1017,18 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  function isNightOnlyRecord(record) {
+    if (!record || !record.staffObject) {
+      return false;
+    }
+    const available = Array.isArray(record.staffObject.availableShifts)
+      ? record.staffObject.availableShifts
+      : [];
+    const canNight = available.some(name => NIGHT_SHIFTS.includes(name));
+    const canDay = available.some(name => DAYTIME_SHIFTS.includes(name));
+    return canNight && !canDay;
+  }
+
   function collectAssignmentsForDay(staffRecords, dayIndex) {
     const assignments = [];
     staffRecords.forEach(record => {
@@ -1368,27 +1380,7 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
 
-    // Phase 2: fill core daytime bands before night allocation
-    resetWorkCounters(staffRecords);
-    for (let day = 1; day <= daysInMonth; day++) {
-      const dayIndex = day - 1;
-      const currentDate = new Date(year, month - 1, day);
-      const dayOfWeek = currentDate.getDay();
-
-      if (dayOfWeek === 0) {
-        staffRecords.forEach(record => {
-          record.workdaysInWeek = 0;
-        });
-      }
-
-      const dayType = getDayType(dayOfWeek);
-      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
-      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
-
-      fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth);
-    }
-
-    // Phase 3: allocate night shifts after daytime coverage
+    // Phase 2: allocate night shifts before daytime coverage
     resetWorkCounters(staffRecords);
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
@@ -1432,7 +1424,16 @@ document.addEventListener('DOMContentLoaded', function () {
           break;
         }
 
-        const availableRecords = collectEligibleRecords(staffRecords, dayIndex, allowedShifts);
+        const allCandidates = collectEligibleRecords(staffRecords, dayIndex, allowedShifts);
+        if (!allCandidates.length) {
+          break;
+        }
+
+        let availableRecords = allCandidates.filter(isNightOnlyRecord);
+        if (!availableRecords.length) {
+          availableRecords = allCandidates;
+        }
+
         if (!availableRecords.length) {
           break;
         }
@@ -1477,8 +1478,37 @@ document.addEventListener('DOMContentLoaded', function () {
               markNightShiftRest(nextCell);
             }
           }
+          if (shift.name === '夜勤A') {
+            const next2 = dayIndex + 2;
+            if (next2 < daysInMonth) {
+              const c2 = staffRecord.cells[next2];
+              if (c2 && !c2.isLocked) {
+                markNightShiftRest(c2);
+              }
+            }
+          }
         }
       }
+    }
+
+    // Phase 3: fill daytime coverage after night allocation
+    resetWorkCounters(staffRecords);
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
+
+      if (dayOfWeek === 0) {
+        staffRecords.forEach(record => {
+          record.workdaysInWeek = 0;
+        });
+      }
+
+      const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
+
+      fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth);
     }
 
     const validation = safeRun(() => validateSchedule(staffRecords, daysInMonth, year, month));
