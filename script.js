@@ -97,6 +97,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const generateButton = document.getElementById('generate-btn');
   const exportCsvButton = document.getElementById('export-csv-btn');
+  const exportXlsxButton = document.getElementById('export-xlsx-btn');
   const csvOutput = document.getElementById('csv-output');
 
   const staffModal = document.getElementById('staff-modal');
@@ -422,6 +423,35 @@ document.addEventListener('DOMContentLoaded', function () {
     csvOutput.select();
     document.execCommand('copy');
     alert('CSVデータをクリップボードにコピーしました！');
+  }
+
+  function exportToXLSX() {
+    const resultTable = document.querySelector('#result-area table');
+    if (!resultTable) {
+      console.error('Excel出力に必要な要素が見つかりません。');
+      return;
+    }
+
+    const y = state.targetYear ?? '';
+    const m = state.targetMonth != null ? String(state.targetMonth).padStart(2, '0') : '';
+    const filename = `シフト_${y}-${m}.xlsx`;
+
+    if (typeof XLSX !== 'undefined' && XLSX && XLSX.utils && XLSX.writeFile) {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.table_to_sheet(resultTable);
+      XLSX.utils.book_append_sheet(wb, ws, 'シフト');
+      XLSX.writeFile(wb, filename);
+      return;
+    }
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${resultTable.outerHTML}</body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename.replace(/\.xlsx$/i, '.xls');
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function normalizeFixedHolidays(staffObject) {
@@ -1762,6 +1792,7 @@ document.addEventListener('DOMContentLoaded', function () {
   if (addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
   if (generateButton) generateButton.addEventListener('click', generateShift);
   if (exportCsvButton) exportCsvButton.addEventListener('click', exportToCSV);
+  if (exportXlsxButton) exportXlsxButton.addEventListener('click', exportToXLSX);
   if (modalSaveBtn) modalSaveBtn.addEventListener('click', handleModalSave);
   if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeStaffModal);
   if (staffModal) {

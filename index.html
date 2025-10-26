@@ -55,6 +55,7 @@
             <section id="result-area" class="panel" aria-labelledby="result-title">
                 <h2 id="result-title">シフト作成結果</h2>
                 <button id="export-csv-btn">CSV形式でコピー</button>
+                <button id="export-xlsx-btn">Excel形式（.xlsx）でダウンロード</button>
                 <div class="table-wrapper">
                     <table>
                         <!-- ヘッダーはJavaScriptで生成 -->
@@ -107,5 +108,6 @@
     </div>
 
     <script src="script.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 </body>
 </html>
