@@ -26,6 +26,13 @@ document.addEventListener('DOMContentLoaded', function () {
     { name: '夜勤C', start: 21, end: 31 },
   ];
 
+  // 夜勤専従判定：夜勤B or 夜勤C を持っているスタッフは常に夜勤専従として扱う
+  function isNightDedicated(recordOrStaff) {
+    const s = recordOrStaff && recordOrStaff.staffObject ? recordOrStaff.staffObject : recordOrStaff;
+    const shifts = Array.isArray(s?.availableShifts) ? s.availableShifts : [];
+    return shifts.includes('夜勤B') || shifts.includes('夜勤C');
+  }
+
   const HOURLY_NEEDS = {
     bathDay: {
       '7-9': 3,
@@ -641,13 +648,55 @@ document.addEventListener('DOMContentLoaded', function () {
     return deficit;
   }
 
-  function fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth) {
+  // 朝7-9の最優先充足（>=3名）。昼の候補は夜勤専従を除く集合からのみ選ぶ。
+  function fillMorningBand7to9(candidateRecords, dayIndex, dayType, nextDayType, daysInMonth) {
+    const allowed = ['早番', '日勤A'];
+    let assigned = collectAssignmentsForDay(candidateRecords, dayIndex);
+    let supply = createHourlySupplyMap(assigned);
+
+    while (true) {
+      const ok7 = (supply[7] || 0) >= 3;
+      const ok8 = (supply[8] || 0) >= 3;
+      if (ok7 && ok8) break;
+
+      const needsMap = createHourlyNeedsMap(dayType);
+      const deficit = calculateDeficitMap(needsMap, supply);
+      const avail = collectEligibleRecords(candidateRecords, dayIndex, allowed);
+      if (!avail.length) break;
+
+      const best = findBestAssignment(
+        avail,
+        deficit,
+        dayIndex,
+        allowed,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        supply
+      );
+      if (!best) break;
+
+      const { staffRecord, shift } = best;
+      if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
+        markForcedRest(staffRecord.cells[dayIndex]);
+        continue;
+      }
+
+      assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
+      staffRecord.workdaysInMonth += 1;
+      staffRecord.workdaysInWeek += 1;
+
+      assigned.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
+      supply = createHourlySupplyMap(assigned);
+    }
+  }
+
+  function fillDaytimeBandsForDay(candidateRecords, dayIndex, dayType, nextDayType, daysInMonth) {
     const bands = [
-      { hours: [7, 9], allowed: ['早番', '日勤A'] },
       { hours: [9, 15], allowed: ['日勤A', '日勤B'] },
       { hours: [16, 18], allowed: ['日勤A', '遅番'] },
     ];
-    let assigned = collectAssignmentsForDay(staffRecords, dayIndex);
+    let assigned = collectAssignmentsForDay(candidateRecords, dayIndex);
     let supply = createHourlySupplyMap(assigned);
     const needsMap = createHourlyNeedsMap(dayType);
 
@@ -655,15 +704,11 @@ document.addEventListener('DOMContentLoaded', function () {
       while (true) {
         const deficit = calculateDeficitMap(needsMap, supply);
         const [a, b] = band.hours;
-        const hasDef = deficit.slice(a, b).some(value => value > 0);
-        if (!hasDef) {
-          break;
-        }
+        const hasDef = deficit.slice(a, b).some(v => v > 0);
+        if (!hasDef) break;
 
-        const avail = collectEligibleRecords(staffRecords, dayIndex, band.allowed);
-        if (!avail.length) {
-          break;
-        }
+        const avail = collectEligibleRecords(candidateRecords, dayIndex, band.allowed);
+        if (!avail.length) break;
 
         const best = findBestAssignment(
           avail,
@@ -675,9 +720,7 @@ document.addEventListener('DOMContentLoaded', function () {
           daysInMonth,
           supply
         );
-        if (!best) {
-          break;
-        }
+        if (!best) break;
 
         const { staffRecord, shift } = best;
         if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
@@ -1362,6 +1405,9 @@ document.addEventListener('DOMContentLoaded', function () {
       };
     });
 
+    const dedicatedNightRecords = staffRecords.filter(r => isNightDedicated(r));
+    const nonDedicatedRecords = staffRecords.filter(r => !isNightDedicated(r));
+
     // Phase 1: establish rest blocks from fixed and requested holidays
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
@@ -1419,27 +1465,20 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (nightStatus.eveningBelowMin) {
           allowedShifts = ['遅番', '夜勤B', '夜勤A'];
         }
-
         if (!allowedShifts) {
           break;
         }
 
-        const allCandidates = collectEligibleRecords(staffRecords, dayIndex, allowedShifts);
-        if (!allCandidates.length) {
-          break;
+        let candidates = collectEligibleRecords(dedicatedNightRecords, dayIndex, allowedShifts);
+        if (!candidates.length) {
+          candidates = collectEligibleRecords(nonDedicatedRecords, dayIndex, allowedShifts);
         }
-
-        let availableRecords = allCandidates.filter(isNightOnlyRecord);
-        if (!availableRecords.length) {
-          availableRecords = allCandidates;
-        }
-
-        if (!availableRecords.length) {
+        if (!candidates.length) {
           break;
         }
 
         const bestMove = findBestAssignment(
-          availableRecords,
+          candidates,
           deficitMap,
           dayIndex,
           allowedShifts,
@@ -1478,6 +1517,7 @@ document.addEventListener('DOMContentLoaded', function () {
               markNightShiftRest(nextCell);
             }
           }
+
           if (shift.name === '夜勤A') {
             const next2 = dayIndex + 2;
             if (next2 < daysInMonth) {
@@ -1491,7 +1531,7 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    // Phase 3: fill daytime coverage after night allocation
+    // Phase 3: prioritize morning coverage (7-9) with non-night-dedicated staff
     resetWorkCounters(staffRecords);
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
@@ -1508,7 +1548,27 @@ document.addEventListener('DOMContentLoaded', function () {
       const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
       const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
 
-      fillDaytimeBandsForDay(staffRecords, dayIndex, dayType, nextDayType, daysInMonth);
+      fillMorningBand7to9(nonDedicatedRecords, dayIndex, dayType, nextDayType, daysInMonth);
+    }
+
+    // Phase 4: fill remaining daytime bands with non-night-dedicated staff
+    resetWorkCounters(staffRecords);
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
+
+      if (dayOfWeek === 0) {
+        staffRecords.forEach(record => {
+          record.workdaysInWeek = 0;
+        });
+      }
+
+      const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
+
+      fillDaytimeBandsForDay(nonDedicatedRecords, dayIndex, dayType, nextDayType, daysInMonth);
     }
 
     const validation = safeRun(() => validateSchedule(staffRecords, daysInMonth, year, month));
