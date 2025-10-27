@@ -678,9 +678,10 @@ document.addEventListener('DOMContentLoaded', function () {
     return deficit;
   }
 
-  // 朝7-9の最優先充足（>=3名）。昼の候補は夜勤専従を除く集合からのみ選ぶ。
+  // 朝7-9の最優先充足（>=3名）。7時・8時は早番で厳密に埋める。
   function fillMorningBand7to9(candidateRecords, dayIndex, dayType, nextDayType, daysInMonth) {
-    const allowed = ['早番', '日勤A'];
+    // 7時・8時を確実に増やすため、早番のみ許可（9時開始のシフトは対象外）
+    const allowed = ['早番'];
     let assigned = collectAssignmentsForDay(candidateRecords, dayIndex);
     let supply = createHourlySupplyMap(assigned);
 
@@ -930,8 +931,10 @@ document.addEventListener('DOMContentLoaded', function () {
       ];
 
       let totalShort = 0;
+      let nightViolations = 0;
       const rec = { day: dayIndex + 1 };
 
+      // 不足（最小値との差）
       for (const band of bands) {
         const [a, b] = band.hours;
         let short = 0;
@@ -939,16 +942,28 @@ document.addEventListener('DOMContentLoaded', function () {
           const hour = (h + 24) % 24;
           const isNext = band.nextMorning === true;
           const typ = isNext ? nextDayType : dayType;
-          const { min } = getMinMaxForHour(typ, hour, isNext);
+          const { min, max } = getMinMaxForHour(typ, hour, isNext);
           const actual = coverage[hour] || 0;
-          if (actual < min) {
-            short += min - actual;
+
+          // 不足
+          if (actual < min) short += min - actual;
+
+          // 夜間ハード違反カウント
+          const isEvening = hour >= 18 && hour <= 20 && !isNext;
+          const isStrictNight = (hour >= 21 && hour <= 23 && !isNext) || (isNext && hour >= 0 && hour <= 6);
+          if (isEvening) {
+            // 18-21は 2〜3のみ許容
+            if (actual < 2 || actual > 3) nightViolations += 1;
+          } else if (isStrictNight) {
+            // 21-23, 0-7 は 2のみ許容
+            if (actual !== 2) nightViolations += 1;
           }
         }
         rec[band.name] = short;
         totalShort += short;
       }
       rec.total = totalShort;
+      rec.viol = nightViolations; // 夜間違反（時間数）
       rows.push(rec);
     }
     return rows;
@@ -958,27 +973,48 @@ document.addEventListener('DOMContentLoaded', function () {
     const tbl = document.getElementById('shortage-table');
     if (!tbl) return;
     tbl.innerHTML = '';
+
+    // 合計不足の降順に並べ替え（同点時は日付昇順）
+    const sorted = rows.slice().sort((a, b) => (b.total - a.total) || (a.day - b.day));
+
     const thead = document.createElement('thead');
     thead.innerHTML = `<tr>
-    <th>日</th><th>7-9</th><th>9-15</th><th>16-18</th><th>18-21</th><th>21-24</th><th>0-7</th><th>合計不足</th>
+    <th>日</th><th>7-9</th><th>9-15</th><th>16-18</th><th>18-21</th><th>21-24</th><th>0-7</th>
+    <th>夜間違反(h)</th><th>合計不足</th>
   </tr>`;
     tbl.appendChild(thead);
+
     const tbody = document.createElement('tbody');
-    rows.forEach(r => {
+    sorted.forEach(r => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${r.day}</td><td>${r['7-9']}</td><td>${r['9-15']}</td><td>${r['16-18']}</td>
-                    <td>${r['18-21']}</td><td>${r['21-24']}</td><td>${r['0-7']}</td><td><b>${r.total}</b></td>`;
-      if (r.total > 0) tr.style.backgroundColor = '#fff5f5';
+      tr.innerHTML = `
+      <td>${r.day}</td>
+      <td>${r['7-9']}</td>
+      <td>${r['9-15']}</td>
+      <td>${r['16-18']}</td>
+      <td>${r['18-21']}</td>
+      <td>${r['21-24']}</td>
+      <td>${r['0-7']}</td>
+      <td>${r.viol}</td>
+      <td><b>${r.total}</b></td>
+    `;
+      if (r.total > 0) {
+        tr.style.backgroundColor = '#fff5f5'; // 不足あり → ピンク
+      } else if (r.viol > 0) {
+        tr.style.backgroundColor = '#fffaf0'; // 不足なしでも夜間違反あり → 薄オレンジ
+      }
       tbody.appendChild(tr);
     });
     tbl.appendChild(tbody);
   }
 
   function exportShortageCSV(rows) {
-    const header = ['日', '7-9', '9-15', '16-18', '18-21', '21-24', '0-7', '合計不足'];
+    // 並び替えは画面と同じ
+    const sorted = rows.slice().sort((a, b) => (b.total - a.total) || (a.day - b.day));
+    const header = ['日', '7-9', '9-15', '16-18', '18-21', '21-24', '0-7', '夜間違反(h)', '合計不足'];
     const lines = [header.join(',')].concat(
-      rows.map(r =>
-        [r.day, r['7-9'], r['9-15'], r['16-18'], r['18-21'], r['21-24'], r['0-7'], r.total].join(',')
+      sorted.map(r =>
+        [r.day, r['7-9'], r['9-15'], r['16-18'], r['18-21'], r['21-24'], r['0-7'], r.viol, r.total].join(',')
       )
     );
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -1182,9 +1218,7 @@ document.addEventListener('DOMContentLoaded', function () {
     daysInMonth = 30,
     currentSupplyMap = null
   ) {
-    if (!Array.isArray(availableRecords) || !availableRecords.length) {
-      return null;
-    }
+    if (!Array.isArray(availableRecords) || !availableRecords.length) return null;
 
     let bestMove = null;
 
@@ -1196,57 +1230,43 @@ document.addEventListener('DOMContentLoaded', function () {
         : [];
       if (!available.length) return;
 
+      // 許可されたシフト群を確定
       let candidateShifts = allowedShiftNames
         ? available.filter(name => allowedShiftNames.includes(name))
         : available.slice();
-      if (
-        allowedShiftNames &&
-        allowedShiftNames.length &&
-        allowedShiftNames.every(name => NIGHT_SHIFTS.includes(name))
-      ) {
+
+      // 夜勤優先の内部順序（C→B→A）
+      if (allowedShiftNames && allowedShiftNames.every(n => NIGHT_SHIFTS.includes(n))) {
         candidateShifts = candidateShifts.sort((a, b) => {
           const aIndex = NIGHT_PRIORITY_ORDER.indexOf(a);
           const bIndex = NIGHT_PRIORITY_ORDER.indexOf(b);
-          return (aIndex === -1 ? NIGHT_PRIORITY_ORDER.length : aIndex) -
-            (bIndex === -1 ? NIGHT_PRIORITY_ORDER.length : bIndex);
+          return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex);
         });
       }
       if (!candidateShifts.length) return;
 
-      const prevAssignment =
-        typeof dayIndex === 'number' && dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment || '' : '';
+      const prevAssignment = dayIndex > 0 ? record.cells[dayIndex - 1]?.assignment || '' : '';
       const prevWasNight = prevAssignment && NIGHT_SHIFTS.includes(prevAssignment);
       const prevWasLateDay = prevAssignment === '日勤A' || prevAssignment === '日勤B';
-
-      const consecutiveWorkdays = typeof dayIndex === 'number' ? countConsecutiveWorkdays(record, dayIndex) : 0;
+      const consecutiveWorkdays = countConsecutiveWorkdays(record, dayIndex);
+      const isNightDedicatedStaff = isNightDedicated(record.staffObject);
 
       candidateShifts.forEach(shiftName => {
         const shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
         if (!shiftDefinition) return;
 
-        if (prevWasLateDay && shiftDefinition.name === '早番') {
-          return;
-        }
+        // 基本的な前後制約
+        if (prevWasLateDay && shiftDefinition.name === '早番') return; // 日勤の後ろ→翌早番は避ける
+        if (prevWasNight) return; // 夜勤明けは不可
+        if (consecutiveWorkdays + 1 > MAX_CONSECUTIVE_WORKDAYS) return;
 
-        if (prevWasNight) {
-          return;
-        }
-
-        const wouldBeConsecutive = consecutiveWorkdays + 1;
-        if (wouldBeConsecutive > MAX_CONSECUTIVE_WORKDAYS) {
-          return;
-        }
-
+        // 上限
         const maxDays = record.staffObject.maxWorkingDays;
-        if (isFiniteNumber(maxDays) && record.workdaysInMonth + 1 > maxDays) {
-          return;
-        }
-
+        if (isFiniteNumber(maxDays) && record.workdaysInMonth + 1 > maxDays) return;
         const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-        if (isFiniteNumber(maxDaysPerWeek) && record.workdaysInWeek + 1 > maxDaysPerWeek) {
-          return;
-        }
+        if (isFiniteNumber(maxDaysPerWeek) && record.workdaysInWeek + 1 > maxDaysPerWeek) return;
 
+        // 夜間ハード上限チェック
         if (
           currentSupplyMap &&
           wouldViolateHardCaps(dayIndex, shiftDefinition, {
@@ -1258,7 +1278,9 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
+        // スコア算出
         let score = 0;
+
         for (let hour = shiftDefinition.start; hour < shiftDefinition.end; hour++) {
           const normalizedHour = ((hour % 24) + 24) % 24;
           const isNextMorning = hour >= 24;
@@ -1267,52 +1289,53 @@ document.addEventListener('DOMContentLoaded', function () {
           const currentCoverage = currentSupplyMap ? currentSupplyMap[normalizedHour] || 0 : 0;
           const afterCoverage = currentCoverage + 1;
           const deficit = deficitMap[normalizedHour] || 0;
-          if (deficit > 0) {
-            score += deficit;
-          }
 
-          const isNightStrict = isStrictNightHour(normalizedHour);
-          const isEvening = isEveningHour(normalizedHour);
+          // 需要差分（不足を埋めるほど加点）
+          if (deficit > 0) score += deficit;
 
-          if ((isNightStrict || isEvening) && min > 0) {
+          // 夜間厳格/夕方の満たし具合に重み付け
+          const nightStrict = isStrictNightHour(normalizedHour);
+          const evening = isEveningHour(normalizedHour);
+
+          if ((nightStrict || evening) && min > 0) {
             const improvement = Math.min(afterCoverage, min) - currentCoverage;
             if (improvement > 0) {
-              const weight = isNightStrict ? 50 : 25;
-              score += improvement * weight;
+              score += improvement * (nightStrict ? 60 : 30); // ←重みを強化
             }
           }
 
-          if (!isNextMorning && isEvening && currentCoverage >= min && (!Number.isFinite(max) || currentCoverage < max)) {
-            score += 5;
-          }
-
+          // 日中帯の最小充足を優遇、過剰は減点
           const isDaytimeHour = !isNextMorning && normalizedHour >= 7 && normalizedHour <= 17;
           if (isDaytimeHour) {
-            if (currentCoverage < min) {
-              score += DAY_NEED_WEIGHT * (min - currentCoverage);
-            }
-            const overAmount = afterCoverage - (min + DAY_OVERSUP_ALLOW);
-            if (overAmount > 0) {
-              score -= DAY_OVERSUP_PENALTY * overAmount;
-            }
+            if (currentCoverage < min) score += DAY_NEED_WEIGHT * (min - currentCoverage);
+            const over = afterCoverage - (min + DAY_OVERSUP_ALLOW);
+            if (over > 0) score -= DAY_OVERSUP_PENALTY * over;
           }
         }
 
+        // 夜勤シフトそのものの優先度（C→B→A）
         if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
-          const priorityIndex = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
-          if (priorityIndex !== -1) {
-            score += (NIGHT_PRIORITY_ORDER.length - priorityIndex) * 2;
-          }
-          const hasDayShifts = (record.staffObject.availableShifts || []).some(name =>
-            DAYTIME_SHIFTS.includes(name)
-          );
-          if (!hasDayShifts) {
-            score += 80;
-          } else {
-            score -= 40;
-          }
+          const p = NIGHT_PRIORITY_ORDER.indexOf(shiftDefinition.name);
+          if (p !== -1) score += (NIGHT_PRIORITY_ORDER.length - p) * 2;
         }
 
+        // 夜勤専従（B/C含む）なら：夜勤は強く加点、日中は強く減点、遅番も減点
+        if (isNightDedicatedStaff) {
+          if (NIGHT_SHIFTS.includes(shiftDefinition.name)) score += 120;
+          if (DAYTIME_SHIFTS.includes(shiftDefinition.name)) score -= 120;
+          if (shiftDefinition.name === '遅番') score -= 60;
+        } else {
+          // 夜勤専従でない人には夜勤をやや抑制（昼を残す）
+          if (NIGHT_SHIFTS.includes(shiftDefinition.name)) score -= 30;
+        }
+
+        // “夜勤しかできない”人へのボーナス（既存ロジックを維持＋少し強化）
+        if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
+          const hasDay = (record.staffObject.availableShifts || []).some(n => DAYTIME_SHIFTS.includes(n));
+          if (!hasDay) score += 80; else score -= 40;
+        }
+
+        // フェアネス（既存）
         const afterMonth = (record.workdaysInMonth || 0) + 1;
         const target = isFiniteNumber(record.targetWorkdays)
           ? record.targetWorkdays
@@ -1320,58 +1343,28 @@ document.addEventListener('DOMContentLoaded', function () {
         const expected = Math.round(target * ((dayIndex + 1) / daysInMonth));
         const progressOver = Math.max(0, afterMonth - expected);
         score -= FAIR_WEIGHTS.progressPenalty * progressOver;
+        if (afterMonth > target) score -= FAIR_WEIGHTS.monthOver * (afterMonth - target);
 
-        if (afterMonth > target) {
-          score -= FAIR_WEIGHTS.monthOver * (afterMonth - target);
-        }
-
+        const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
         const weekAfter = (record.workdaysInWeek || 0) + 1;
         if (isFiniteNumber(maxDaysPerWeek)) {
           const threshold = Math.max(1, maxDaysPerWeek - 1);
-          if (weekAfter > threshold) {
-            score -= FAIR_WEIGHTS.weekRisk * (weekAfter - threshold);
-          }
+          if (weekAfter > threshold) score -= FAIR_WEIGHTS.weekRisk * (weekAfter - threshold);
         }
-
+        const wouldBeConsecutive = consecutiveWorkdays + 1;
         if (wouldBeConsecutive >= MAX_CONSECUTIVE_WORKDAYS) {
           score -= FAIR_WEIGHTS.streakNearMax * (wouldBeConsecutive - MAX_CONSECUTIVE_WORKDAYS + 1);
         }
 
-        if (score <= 0) {
-          return;
-        }
+        if (score <= 0) return;
 
-        const availableCount = available.length;
-        if (NIGHT_SHIFTS.includes(shiftDefinition.name)) {
-          if (availableCount > 0 && availableCount <= 3) {
-            score += 50;
-          }
-        } else if (DAYTIME_SHIFTS.includes(shiftDefinition.name)) {
-          const canWorkNight = available.some(name => NIGHT_SHIFTS.includes(name));
-          if (!canWorkNight) {
-            score += 30;
-          }
-        }
-
-        if (!bestMove || score > bestMove.score) {
-          bestMove = {
-            staffRecord: record,
-            shift: shiftDefinition,
-            score,
-          };
-          return;
-        }
-
-        if (bestMove && score === bestMove.score) {
-          const currentMonthWork = record.workdaysInMonth || 0;
-          const bestMonthWork = bestMove.staffRecord ? bestMove.staffRecord.workdaysInMonth || 0 : 0;
-          if (currentMonthWork < bestMonthWork) {
-            bestMove = {
-              staffRecord: record,
-              shift: shiftDefinition,
-              score,
-            };
-          }
+        // タイブレーク：月稼働が少ない人を優先
+        if (
+          !bestMove ||
+          score > bestMove.score ||
+          (score === bestMove.score && (record.workdaysInMonth || 0) < (bestMove.staffRecord?.workdaysInMonth || 0))
+        ) {
+          bestMove = { staffRecord: record, shift: shiftDefinition, score };
         }
       });
     });
@@ -1491,9 +1484,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
         let allowedShifts = null;
         if (nightStatus.strictBelowMin) {
-          allowedShifts = NIGHT_SHIFTS;
+          allowedShifts = NIGHT_SHIFTS; // 21-23/0-7 は夜勤のみで対応
         } else if (nightStatus.eveningBelowMin) {
-          allowedShifts = ['遅番', '夜勤B', '夜勤A'];
+          // 18-21 の不足は まず夜勤B/A で確保 → 足りなければ遅番
+          allowedShifts = ['夜勤B', '夜勤A', '遅番'];
         }
         if (!allowedShifts) {
           break;
