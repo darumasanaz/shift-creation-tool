@@ -43,7 +43,8 @@
                     <button type="button" id="add-dayoff-button">希望休を登録</button>
                 </form>
                 <p>登録された希望休:</p>
-                <ul id="dayoff-list"></ul>
+                <ul id="dayoff-list" class="editable-list" aria-live="polite"></ul>
+                <button type="button" id="clear-dayoff-button" aria-label="登録済みの希望休を全て削除">希望休を全て削除</button>
             </section>
 
             <!-- 実行セクション -->

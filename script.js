@@ -94,6 +94,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const dayoffDateInput = document.getElementById('dayoff-date');
   const addDayoffButton = document.getElementById('add-dayoff-button');
   const dayoffList = document.getElementById('dayoff-list');
+  const clearDayoffButton = document.getElementById('clear-dayoff-button');
 
   const generateButton = document.getElementById('generate-btn');
   const exportCsvButton = document.getElementById('export-csv-btn');
@@ -341,13 +342,52 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!dayoffList) return;
     dayoffList.innerHTML = '';
 
-    state.dayoffs.forEach(dayoff => {
+    state.dayoffs.forEach((dayoff, idx) => {
       const li = document.createElement('li');
+
       const staff = state.staff.find(item => item.id === dayoff.staffId);
       const staffName = dayoff.staffName || (staff ? staff.name : '不明なスタッフ');
-      li.textContent = `${staffName} - ${dayoff.date}`;
+
+      li.innerHTML = `
+      <span>${staffName} - ${dayoff.date}</span>
+      <button
+        type="button"
+        class="delete-btn delete-dayoff-btn"
+        data-index="${idx}"
+        aria-label="${staffName} の ${dayoff.date} の希望休を削除"
+      >削除</button>
+    `;
+
       dayoffList.appendChild(li);
     });
+  }
+
+  function handleDayoffListClick(event) {
+    const btn = event.target.closest('.delete-dayoff-btn');
+    if (!btn) return;
+
+    const idx = Number(btn.dataset.index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= state.dayoffs.length) return;
+
+    const target = state.dayoffs[idx];
+    const staff = state.staff.find(s => s.id === target.staffId);
+    const staffName = target.staffName || (staff ? staff.name : '不明なスタッフ');
+    const ok = window.confirm(`${staffName} の ${target.date} の希望休を削除しますか？`);
+    if (!ok) return;
+
+    state.dayoffs.splice(idx, 1);
+    renderDayoffList();
+    saveState();
+  }
+
+  function handleClearDayoffs() {
+    if (!state.dayoffs.length) return;
+    const ok = window.confirm(`登録済みの希望休（${state.dayoffs.length}件）を全て削除します。よろしいですか？`);
+    if (!ok) return;
+
+    state.dayoffs = [];
+    renderDayoffList();
+    saveState();
   }
 
   function renderHeader() {
@@ -1790,6 +1830,8 @@ document.addEventListener('DOMContentLoaded', function () {
   if (addStaffButton) addStaffButton.addEventListener('click', addStaff);
   if (staffList) staffList.addEventListener('click', handleStaffListClick);
   if (addDayoffButton) addDayoffButton.addEventListener('click', addDayoff);
+  if (dayoffList) dayoffList.addEventListener('click', handleDayoffListClick);
+  if (clearDayoffButton) clearDayoffButton.addEventListener('click', handleClearDayoffs);
   if (generateButton) generateButton.addEventListener('click', generateShift);
   if (exportCsvButton) exportCsvButton.addEventListener('click', exportToCSV);
   if (exportXlsxButton) exportXlsxButton.addEventListener('click', exportToXLSX);
