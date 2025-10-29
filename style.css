@@ -126,6 +126,16 @@ select {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.range-sep {
+  opacity: 0.6;
+}
+
 input:focus,
 select:focus,
 button:focus-visible {

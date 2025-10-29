@@ -67,6 +67,12 @@ document.addEventListener('DOMContentLoaded', function () {
     weekRisk: 6,
     streakNearMax: 2,
   };
+  const WORKDAY_RANGE_WEIGHTS = {
+    monthMinBonus: 20,
+    monthMaxPenalty: 50,
+    weekMinBonus: 15,
+    weekMaxPenalty: 40,
+  };
   const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
   const EVENING_HOURS = [18, 19, 20];
   const DAY_NEED_WEIGHT = 10;
@@ -106,7 +112,9 @@ document.addEventListener('DOMContentLoaded', function () {
   const modalForm = document.getElementById('modal-form');
   const modalShifts = document.getElementById('modal-shifts');
   const modalWeekdays = document.getElementById('modal-weekdays');
+  const modalMinDays = document.getElementById('modal-min-days');
   const modalMaxDays = document.getElementById('modal-max-days');
+  const modalMinDaysPerWeek = document.getElementById('modal-min-days-per-week');
   const modalMaxDaysPerWeek = document.getElementById('modal-max-days-per-week');
   const modalSaveBtn = document.getElementById('modal-save-btn');
   const modalCancelBtn = document.getElementById('modal-cancel-btn');
@@ -146,28 +154,55 @@ document.addEventListener('DOMContentLoaded', function () {
             const fixedHolidays = Array.isArray(item.fixedHolidays)
               ? item.fixedHolidays.map(value => String(value))
               : [];
-            let maxWorkingDays = null;
-            if (item.maxWorkingDays != null && item.maxWorkingDays !== '') {
-              const parsedMaxWorking = Number(item.maxWorkingDays);
-              if (Number.isFinite(parsedMaxWorking)) {
-                maxWorkingDays = parsedMaxWorking;
-              }
+
+            const parseNullableNumber = value => {
+              if (value === null || value === undefined) return null;
+              if (typeof value === 'string' && value.trim() === '') return null;
+              const num = Number(value);
+              return Number.isFinite(num) ? num : null;
+            };
+
+            let minWorkingDays = parseNullableNumber(item.minWorkingDays);
+            let maxWorkingDays = parseNullableNumber(item.maxWorkingDays);
+            let minDaysPerWeek = parseNullableNumber(item.minDaysPerWeek);
+            let maxDaysPerWeek = parseNullableNumber(item.maxDaysPerWeek);
+
+            if (Number.isFinite(maxWorkingDays) && !Number.isFinite(minWorkingDays)) {
+              minWorkingDays = 0;
+            }
+            if (Number.isFinite(maxDaysPerWeek) && !Number.isFinite(minDaysPerWeek)) {
+              minDaysPerWeek = 0;
             }
 
-            let maxDaysPerWeek = null;
-            if (item.maxDaysPerWeek != null && item.maxDaysPerWeek !== '') {
-              const parsedWeekly = Number(item.maxDaysPerWeek);
-              if (Number.isFinite(parsedWeekly)) {
-                maxDaysPerWeek = parsedWeekly;
-              }
+            if (Number.isFinite(minWorkingDays) && Number.isFinite(maxWorkingDays) && minWorkingDays > maxWorkingDays) {
+              minWorkingDays = maxWorkingDays;
             }
+            if (Number.isFinite(minDaysPerWeek) && Number.isFinite(maxDaysPerWeek) && minDaysPerWeek > maxDaysPerWeek) {
+              minDaysPerWeek = maxDaysPerWeek;
+            }
+
+            const normalizeRangeValue = (value, upperLimit = null) => {
+              if (!Number.isFinite(value)) return null;
+              let normalized = Math.max(0, value);
+              if (Number.isFinite(upperLimit)) {
+                normalized = Math.min(upperLimit, normalized);
+              }
+              return normalized;
+            };
+
+            minWorkingDays = normalizeRangeValue(minWorkingDays);
+            maxWorkingDays = normalizeRangeValue(maxWorkingDays);
+            minDaysPerWeek = normalizeRangeValue(minDaysPerWeek, 7);
+            maxDaysPerWeek = normalizeRangeValue(maxDaysPerWeek, 7);
 
             return {
               id: item.id || generateStaffId(),
               name: typeof item.name === 'string' ? item.name : '',
               availableShifts: available,
               fixedHolidays,
+              minWorkingDays,
               maxWorkingDays,
+              minDaysPerWeek,
               maxDaysPerWeek,
             };
           });
@@ -250,7 +285,9 @@ document.addEventListener('DOMContentLoaded', function () {
       name,
       availableShifts: [...SHIFT_PATTERNS],
       fixedHolidays: [],
+      minWorkingDays: null,
       maxWorkingDays: null,
+      minDaysPerWeek: null,
       maxDaysPerWeek: null,
     };
   }
@@ -1353,19 +1390,47 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
 
-        const afterMonth = (record.workdaysInMonth || 0) + 1;
-        const target = isFiniteNumber(record.targetWorkdays)
-          ? record.targetWorkdays
-          : Math.ceil(daysInMonth * 0.55);
-        const expected = Math.round(target * ((dayIndex + 1) / daysInMonth));
-        const progressOver = Math.max(0, afterMonth - expected);
+        const normalizedDaysInMonth = Number.isFinite(daysInMonth) && daysInMonth > 0 ? daysInMonth : 30;
+        const dayPosition = typeof dayIndex === 'number' ? dayIndex + 1 : 1;
+        const monthWorkAfter = (record.workdaysInMonth || 0) + 1;
+        const minMonthGoal = isFiniteNumber(record.staffObject.minWorkingDays)
+          ? record.staffObject.minWorkingDays
+          : null;
+        const maxMonthLimit = isFiniteNumber(record.staffObject.maxWorkingDays)
+          ? record.staffObject.maxWorkingDays
+          : null;
+        const fallbackMonthTarget = Math.ceil(normalizedDaysInMonth * 0.55);
+        const monthTarget = minMonthGoal != null ? minMonthGoal : fallbackMonthTarget;
+        const expectedByToday = Math.round(monthTarget * (dayPosition / normalizedDaysInMonth));
+        const progressOver = Math.max(0, monthWorkAfter - expectedByToday);
         score -= FAIR_WEIGHTS.progressPenalty * progressOver;
 
-        if (afterMonth > target) {
-          score -= FAIR_WEIGHTS.monthOver * (afterMonth - target);
+        if (Number.isFinite(monthTarget) && monthWorkAfter > monthTarget) {
+          score -= FAIR_WEIGHTS.monthOver * (monthWorkAfter - monthTarget);
+        }
+
+        if (minMonthGoal != null && monthWorkAfter <= minMonthGoal) {
+          score += WORKDAY_RANGE_WEIGHTS.monthMinBonus * (minMonthGoal - monthWorkAfter + 1);
+        }
+
+        if (maxMonthLimit != null && monthWorkAfter > maxMonthLimit) {
+          score -= WORKDAY_RANGE_WEIGHTS.monthMaxPenalty * (monthWorkAfter - maxMonthLimit);
         }
 
         const weekAfter = (record.workdaysInWeek || 0) + 1;
+        const minWeekGoal = isFiniteNumber(record.staffObject.minDaysPerWeek)
+          ? record.staffObject.minDaysPerWeek
+          : null;
+        const maxWeekLimit = isFiniteNumber(maxDaysPerWeek) ? maxDaysPerWeek : null;
+
+        if (minWeekGoal != null && weekAfter <= minWeekGoal) {
+          score += WORKDAY_RANGE_WEIGHTS.weekMinBonus * (minWeekGoal - weekAfter + 1);
+        }
+
+        if (maxWeekLimit != null && weekAfter > maxWeekLimit) {
+          score -= WORKDAY_RANGE_WEIGHTS.weekMaxPenalty * (weekAfter - maxWeekLimit);
+        }
+
         if (isFiniteNumber(maxDaysPerWeek)) {
           const threshold = Math.max(1, maxDaysPerWeek - 1);
           if (weekAfter > threshold) {
@@ -1468,10 +1533,10 @@ document.addEventListener('DOMContentLoaded', function () {
         cells,
         workdaysInMonth: 0,
         workdaysInWeek: 0,
-        targetWorkdays: isFiniteNumber(staff.maxWorkingDays)
-          ? staff.maxWorkingDays
+        targetWorkdays: isFiniteNumber(staff.minWorkingDays)
+          ? staff.minWorkingDays
           : Math.ceil(daysInMonth * 0.55),
-        minWorkdaysGoal: null,
+        minWorkdaysGoal: isFiniteNumber(staff.minWorkingDays) ? staff.minWorkingDays : null,
       };
     });
 
@@ -1711,10 +1776,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
     populateShiftCheckboxes(staff);
     populateWeekdayCheckboxes(staff);
+    if (modalMinDays) {
+      modalMinDays.value = staff.minWorkingDays != null ? staff.minWorkingDays : '';
+    }
     if (modalMaxDays) {
       modalMaxDays.value = staff.maxWorkingDays != null ? staff.maxWorkingDays : '';
     }
 
+    if (modalMinDaysPerWeek) {
+      modalMinDaysPerWeek.value = staff.minDaysPerWeek != null ? staff.minDaysPerWeek : '';
+    }
     if (modalMaxDaysPerWeek) {
       modalMaxDaysPerWeek.value = staff.maxDaysPerWeek != null ? staff.maxDaysPerWeek : '';
     }
@@ -1800,25 +1871,43 @@ document.addEventListener('DOMContentLoaded', function () {
       normalizeFixedHolidays(staff);
     }
 
-    if (modalMaxDays) {
-      const maxDaysRaw = modalMaxDays.value.trim();
-      if (maxDaysRaw === '') {
-        staff.maxWorkingDays = null;
-      } else {
-        const parsedMaxDays = Number(maxDaysRaw);
-        staff.maxWorkingDays = Number.isFinite(parsedMaxDays) ? parsedMaxDays : null;
-      }
+    const toNumOrNull = value => {
+      if (value == null) return null;
+      const trimmed = String(value).trim();
+      if (trimmed === '') return null;
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const sanitizeMonthValue = value => {
+      if (value == null) return null;
+      return Math.max(0, value);
+    };
+
+    const sanitizeWeekValue = value => {
+      if (value == null) return null;
+      return Math.min(7, Math.max(0, value));
+    };
+
+    let minMonthValue = modalMinDays ? sanitizeMonthValue(toNumOrNull(modalMinDays.value)) : null;
+    let maxMonthValue = modalMaxDays ? sanitizeMonthValue(toNumOrNull(modalMaxDays.value)) : null;
+    let minWeekValue = modalMinDaysPerWeek ? sanitizeWeekValue(toNumOrNull(modalMinDaysPerWeek.value)) : null;
+    let maxWeekValue = modalMaxDaysPerWeek ? sanitizeWeekValue(toNumOrNull(modalMaxDaysPerWeek.value)) : null;
+
+    if (minMonthValue != null && maxMonthValue != null && minMonthValue > maxMonthValue) {
+      alert('月間の下限は上限以下にしてください');
+      return;
     }
 
-    if (modalMaxDaysPerWeek) {
-      const maxDaysPerWeekRaw = modalMaxDaysPerWeek.value.trim();
-      if (maxDaysPerWeekRaw === '') {
-        staff.maxDaysPerWeek = null;
-      } else {
-        const parsedWeekly = Number(maxDaysPerWeekRaw);
-        staff.maxDaysPerWeek = Number.isFinite(parsedWeekly) ? parsedWeekly : null;
-      }
+    if (minWeekValue != null && maxWeekValue != null && minWeekValue > maxWeekValue) {
+      alert('週の下限は上限以下にしてください');
+      return;
     }
+
+    staff.minWorkingDays = minMonthValue;
+    staff.maxWorkingDays = maxMonthValue;
+    staff.minDaysPerWeek = minWeekValue;
+    staff.maxDaysPerWeek = maxWeekValue;
 
     renderStaffList();
     renderDayoffList();
