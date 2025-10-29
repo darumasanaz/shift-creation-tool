@@ -135,38 +135,6 @@ document.addEventListener('DOMContentLoaded', function () {
     return `"${normalized.replace(/"/g, '""')}"`;
   }
 
-  function showCsvOutput(text) {
-    if (!csvOutput) return;
-    csvOutput.value = text;
-    csvOutput.style.display = 'block';
-    csvOutput.focus();
-    csvOutput.select();
-  }
-
-  async function copySelectedTextToClipboard(text) {
-    if (!text) return false;
-
-    if (navigator?.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return true;
-      } catch (error) {
-        console.warn('Clipboard API write failed, falling back to execCommand.', error);
-      }
-    }
-
-    try {
-      if (document.queryCommandSupported && !document.queryCommandSupported('copy')) {
-        return false;
-      }
-      const result = document.execCommand('copy');
-      return result;
-    } catch (error) {
-      console.warn('document.execCommand("copy") failed.', error);
-      return false;
-    }
-  }
-
   function joinList(arr) {
     if (!Array.isArray(arr) || arr.length === 0) return '';
     return arr
@@ -276,7 +244,7 @@ document.addEventListener('DOMContentLoaded', function () {
     return [header].concat(lines).join('\n');
   }
 
-  async function exportCombinedCSV() {
+  function exportCombinedCSV() {
     const scheduleCSV = buildScheduleCSVFromTable();
     const staffCSV = buildStaffConditionsCSV();
     const dayoffsCSV = buildDayoffsCSV();
@@ -296,9 +264,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const combined = sections.join('\n');
 
-    showCsvOutput(combined);
-
-    const copied = await copySelectedTextToClipboard(combined);
+    const output = document.getElementById('csv-output');
+    if (output) {
+      output.value = combined;
+      output.style.display = 'block';
+      output.select();
+      document.execCommand('copy');
+    }
 
     if (combined) {
       const blob = new Blob([combined], { type: 'text/csv;charset=utf-8;' });
@@ -312,11 +284,7 @@ document.addEventListener('DOMContentLoaded', function () {
       URL.revokeObjectURL(url);
     }
 
-    if (copied) {
-      alert('結果＋条件のCSVをコピーし、ダウンロードも開始しました。');
-    } else {
-      alert('結果＋条件のCSVのコピーに失敗しました。テキストエリアから手動でコピーしてください。');
-    }
+    alert('結果＋条件のCSVをコピーし、ダウンロードも開始しました。');
   }
 
   function saveState() {
@@ -661,16 +629,20 @@ document.addEventListener('DOMContentLoaded', function () {
     resultTable.appendChild(tbody);
   }
 
-  async function exportToCSV() {
-    const csvString = buildScheduleCSVFromTable();
-    showCsvOutput(csvString);
-
-    const copied = await copySelectedTextToClipboard(csvString);
-    if (copied) {
-      alert('CSVデータをクリップボードにコピーしました！');
-    } else {
-      alert('CSVデータのコピーに失敗しました。テキストエリアから手動でコピーしてください。');
+  function exportToCSV() {
+    const csvOutput = document.getElementById('csv-output');
+    if (!csvOutput) {
+      console.error('CSV出力に必要な要素が見つかりません。');
+      return;
     }
+
+    const csvString = buildScheduleCSVFromTable();
+
+    csvOutput.value = csvString;
+    csvOutput.style.display = 'block';
+    csvOutput.select();
+    document.execCommand('copy');
+    alert('CSVデータをクリップボードにコピーしました！');
   }
 
   function exportToXLSX() {
