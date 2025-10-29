@@ -314,7 +314,23 @@ tbody td {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
+.delete-btn {
+  border: 1px solid var(--border-color);
+  background-color: #fee2e2;
+  color: #7f1d1d;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
 .edit-btn:hover {
   background-color: var(--secondary-button);
   color: var(--heading-color);
+}
+
+.delete-btn:hover {
+  background-color: #fecaca;
 }
