@@ -96,10 +96,18 @@
                     <label><input type="checkbox" name="modal-weekday" value="sat"> 土</label>
                     <label><input type="checkbox" name="modal-weekday" value="sun"> 日</label>
                 </div>
-                <label for="modal-max-days">月間勤務日数上限:</label>
-                <input type="number" id="modal-max-days" min="0">
-                <label for="modal-max-days-per-week">週の勤務日数上限:</label>
-                <input type="number" id="modal-max-days-per-week" min="0" placeholder="例: 5">
+                <label>月間勤務日数（下限〜上限）:</label>
+                <div class="range-row">
+                    <input type="number" id="modal-min-days" min="0" placeholder="下限 例: 10">
+                    <span class="range-sep">〜</span>
+                    <input type="number" id="modal-max-days" min="0" placeholder="上限 例: 12">
+                </div>
+                <label>週の勤務日数（下限〜上限）:</label>
+                <div class="range-row">
+                    <input type="number" id="modal-min-days-per-week" min="0" max="7" placeholder="下限 例: 3">
+                    <span class="range-sep">〜</span>
+                    <input type="number" id="modal-max-days-per-week" min="0" max="7" placeholder="上限 例: 5">
+                </div>
                 <div class="modal-actions">
                     <button type="button" id="modal-save-btn">保存</button>
                     <button type="button" id="modal-cancel-btn">キャンセル</button>
