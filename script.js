@@ -112,16 +112,10 @@ document.addEventListener('DOMContentLoaded', function () {
   const modalForm = document.getElementById('modal-form');
   const modalShifts = document.getElementById('modal-shifts');
   const modalWeekdays = document.getElementById('modal-weekdays');
-  const monthMinNum = document.getElementById('modal-min-days');
-  const monthMaxNum = document.getElementById('modal-max-days');
-  const weekMinNum = document.getElementById('modal-min-days-per-week');
-  const weekMaxNum = document.getElementById('modal-max-days-per-week');
-  const monthMinRange = document.getElementById('month-range-min');
-  const monthMaxRange = document.getElementById('month-range-max');
-  const monthTrack = document.getElementById('month-range-track');
-  const weekMinRange = document.getElementById('week-range-min');
-  const weekMaxRange = document.getElementById('week-range-max');
-  const weekTrack = document.getElementById('week-range-track');
+  const modalMinDays = document.getElementById('modal-min-days');
+  const modalMaxDays = document.getElementById('modal-max-days');
+  const modalMinDaysPerWeek = document.getElementById('modal-min-days-per-week');
+  const modalMaxDaysPerWeek = document.getElementById('modal-max-days-per-week');
   const modalSaveBtn = document.getElementById('modal-save-btn');
   const modalCancelBtn = document.getElementById('modal-cancel-btn');
 
@@ -132,84 +126,6 @@ document.addEventListener('DOMContentLoaded', function () {
     targetYear: null,
     targetMonth: null,
   };
-
-  function cleanupDoubleRangeHandlers(elements) {
-    elements.forEach(element => {
-      if (!element || !Array.isArray(element._doubleRangeHandlers)) return;
-      element._doubleRangeHandlers.forEach(({ type, handler }) => {
-        element.removeEventListener(type, handler);
-      });
-      element._doubleRangeHandlers = [];
-    });
-  }
-
-  function attachDoubleRange({ minNum, maxNum, minRange, maxRange, track, boundMin, boundMax }) {
-    if (!minNum || !maxNum || !minRange || !maxRange || !track) return;
-    const total = boundMax - boundMin;
-    if (total <= 0) return;
-
-    cleanupDoubleRangeHandlers([minNum, maxNum, minRange, maxRange]);
-
-    const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
-
-    function paint() {
-      const minValue = Number(minRange.value);
-      const maxValue = Number(maxRange.value);
-      const pctLeft = ((minValue - boundMin) / total) * 100;
-      const pctRight = ((maxValue - boundMin) / total) * 100;
-
-      track.style.background = `linear-gradient(to right,
-        #e5eaf3 ${pctLeft}%,
-        #2f80ed ${pctLeft}%,
-        #2f80ed ${pctRight}%,
-        #e5eaf3 ${pctRight}%)`;
-    }
-
-    function syncFromNum() {
-      let lo = clamp(Number(minNum.value || boundMin), boundMin, boundMax);
-      let hi = clamp(Number(maxNum.value || boundMax), boundMin, boundMax);
-      if (lo > hi) [lo, hi] = [hi, lo];
-      minRange.value = lo;
-      maxRange.value = hi;
-      minNum.value = lo;
-      maxNum.value = hi;
-      paint();
-    }
-
-    function syncFromRange(changed) {
-      let lo = Number(minRange.value);
-      let hi = Number(maxRange.value);
-      if (changed === minRange && lo > hi) {
-        hi = lo;
-        maxRange.value = hi;
-      }
-      if (changed === maxRange && hi < lo) {
-        lo = hi;
-        minRange.value = lo;
-      }
-      minNum.value = lo;
-      maxNum.value = hi;
-      paint();
-    }
-
-    const handlers = [
-      { element: minNum, type: 'input', handler: syncFromNum },
-      { element: maxNum, type: 'input', handler: syncFromNum },
-      { element: minRange, type: 'input', handler: () => syncFromRange(minRange) },
-      { element: maxRange, type: 'input', handler: () => syncFromRange(maxRange) },
-    ];
-
-    handlers.forEach(({ element, type, handler }) => {
-      if (!element) return;
-      element.addEventListener(type, handler);
-      if (!Array.isArray(element._doubleRangeHandlers)) {
-        element._doubleRangeHandlers = [];
-      }
-      element._doubleRangeHandlers.push({ type, handler });
-    });
-
-    syncFromNum();
-  }
 
   function saveState() {
     try {
@@ -1860,51 +1776,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
     populateShiftCheckboxes(staff);
     populateWeekdayCheckboxes(staff);
-
-    const numOrEmpty = value =>
-      value == null || !Number.isFinite(Number(value)) ? '' : String(Number(value));
-
-    if (monthMinNum) {
-      monthMinNum.value = numOrEmpty(staff.minWorkingDays);
+    if (modalMinDays) {
+      modalMinDays.value = staff.minWorkingDays != null ? staff.minWorkingDays : '';
     }
-    if (monthMaxNum) {
-      monthMaxNum.value = numOrEmpty(staff.maxWorkingDays);
-    }
-    if (weekMinNum) {
-      weekMinNum.value = numOrEmpty(staff.minDaysPerWeek);
-    }
-    if (weekMaxNum) {
-      weekMaxNum.value = numOrEmpty(staff.maxDaysPerWeek);
+    if (modalMaxDays) {
+      modalMaxDays.value = staff.maxWorkingDays != null ? staff.maxWorkingDays : '';
     }
 
-    if (monthMinNum && monthMaxNum && !monthMinNum.value && !monthMaxNum.value) {
-      monthMinNum.value = 0;
-      monthMaxNum.value = 31;
+    if (modalMinDaysPerWeek) {
+      modalMinDaysPerWeek.value = staff.minDaysPerWeek != null ? staff.minDaysPerWeek : '';
     }
-    if (weekMinNum && weekMaxNum && !weekMinNum.value && !weekMaxNum.value) {
-      weekMinNum.value = 0;
-      weekMaxNum.value = 7;
+    if (modalMaxDaysPerWeek) {
+      modalMaxDaysPerWeek.value = staff.maxDaysPerWeek != null ? staff.maxDaysPerWeek : '';
     }
-
-    attachDoubleRange({
-      minNum: monthMinNum,
-      maxNum: monthMaxNum,
-      minRange: monthMinRange,
-      maxRange: monthMaxRange,
-      track: monthTrack,
-      boundMin: 0,
-      boundMax: 31,
-    });
-
-    attachDoubleRange({
-      minNum: weekMinNum,
-      maxNum: weekMaxNum,
-      minRange: weekMinRange,
-      maxRange: weekMaxRange,
-      track: weekTrack,
-      boundMin: 0,
-      boundMax: 7,
-    });
 
     staffModal.style.display = 'flex';
   }
@@ -1987,43 +1871,43 @@ document.addEventListener('DOMContentLoaded', function () {
       normalizeFixedHolidays(staff);
     }
 
-    function toNumOrNull(value) {
+    const toNumOrNull = value => {
       if (value == null) return null;
       const trimmed = String(value).trim();
       if (trimmed === '') return null;
       const parsed = Number(trimmed);
       return Number.isFinite(parsed) ? parsed : null;
-    }
+    };
 
-    let minM = monthMinNum ? toNumOrNull(monthMinNum.value) : null;
-    let maxM = monthMaxNum ? toNumOrNull(monthMaxNum.value) : null;
-    if (minM != null && maxM != null && minM > maxM) [minM, maxM] = [maxM, minM];
+    const sanitizeMonthValue = value => {
+      if (value == null) return null;
+      return Math.max(0, value);
+    };
 
-    let minW = weekMinNum ? toNumOrNull(weekMinNum.value) : null;
-    let maxW = weekMaxNum ? toNumOrNull(weekMaxNum.value) : null;
-    if (minW != null && maxW != null && minW > maxW) [minW, maxW] = [maxW, minW];
+    const sanitizeWeekValue = value => {
+      if (value == null) return null;
+      return Math.min(7, Math.max(0, value));
+    };
 
-    if (minM != null && (minM < 0 || minM > 31)) {
-      alert('月間下限は0〜31で入力してください');
-      return;
-    }
-    if (maxM != null && (maxM < 0 || maxM > 31)) {
-      alert('月間上限は0〜31で入力してください');
-      return;
-    }
-    if (minW != null && (minW < 0 || minW > 7)) {
-      alert('週下限は0〜7で入力してください');
-      return;
-    }
-    if (maxW != null && (maxW < 0 || maxW > 7)) {
-      alert('週上限は0〜7で入力してください');
+    let minMonthValue = modalMinDays ? sanitizeMonthValue(toNumOrNull(modalMinDays.value)) : null;
+    let maxMonthValue = modalMaxDays ? sanitizeMonthValue(toNumOrNull(modalMaxDays.value)) : null;
+    let minWeekValue = modalMinDaysPerWeek ? sanitizeWeekValue(toNumOrNull(modalMinDaysPerWeek.value)) : null;
+    let maxWeekValue = modalMaxDaysPerWeek ? sanitizeWeekValue(toNumOrNull(modalMaxDaysPerWeek.value)) : null;
+
+    if (minMonthValue != null && maxMonthValue != null && minMonthValue > maxMonthValue) {
+      alert('月間の下限は上限以下にしてください');
       return;
     }
 
-    staff.minWorkingDays = minM;
-    staff.maxWorkingDays = maxM;
-    staff.minDaysPerWeek = minW;
-    staff.maxDaysPerWeek = maxW;
+    if (minWeekValue != null && maxWeekValue != null && minWeekValue > maxWeekValue) {
+      alert('週の下限は上限以下にしてください');
+      return;
+    }
+
+    staff.minWorkingDays = minMonthValue;
+    staff.maxWorkingDays = maxMonthValue;
+    staff.minDaysPerWeek = minWeekValue;
+    staff.maxDaysPerWeek = maxWeekValue;
 
     renderStaffList();
     renderDayoffList();
