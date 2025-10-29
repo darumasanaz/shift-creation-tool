@@ -104,7 +104,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const generateButton = document.getElementById('generate-btn');
   const exportCsvButton = document.getElementById('export-csv-btn');
-  const exportCombinedCsvButton = document.getElementById('export-combined-csv-btn');
   const exportXlsxButton = document.getElementById('export-xlsx-btn');
   const csvOutput = document.getElementById('csv-output');
 
@@ -127,165 +126,6 @@ document.addEventListener('DOMContentLoaded', function () {
     targetYear: null,
     targetMonth: null,
   };
-
-  const WEEKDAY_LABELS_JA = ['日', '月', '火', '水', '木', '金', '土'];
-
-  function csvEscape(value) {
-    const normalized = value == null ? '' : String(value);
-    return `"${normalized.replace(/"/g, '""')}"`;
-  }
-
-  function joinList(arr) {
-    if (!Array.isArray(arr) || arr.length === 0) return '';
-    return arr
-      .map(item => (item == null ? '' : String(item).trim()))
-      .filter(item => item !== '')
-      .join(' | ');
-  }
-
-  function mapFixedHolidaysToLabel(values) {
-    if (!Array.isArray(values) || values.length === 0) return '';
-    const unique = Array.from(
-      new Set(
-        values
-          .map(value => String(value).trim())
-          .filter(value => value !== '')
-      )
-    );
-    const labels = unique
-      .map(value => {
-        const index = Number(value);
-        return Number.isInteger(index) && index >= 0 && index <= 6 ? WEEKDAY_LABELS_JA[index] : null;
-      })
-      .filter(Boolean);
-    return labels.join(' | ');
-  }
-
-  function buildScheduleCSVFromTable() {
-    const resultTable = document.querySelector('#result-area table');
-    if (!resultTable) return '';
-
-    const lines = [];
-    const headerRow = resultTable.querySelector('thead tr:first-child');
-    if (headerRow) {
-      const headers = Array.from(headerRow.querySelectorAll('th')).map(th =>
-        csvEscape((th.textContent || '').trim())
-      );
-      lines.push(headers.join(','));
-    }
-
-    const dataRows = resultTable.querySelectorAll('tbody tr');
-    dataRows.forEach(row => {
-      const cols = Array.from(row.querySelectorAll('td')).map(td =>
-        csvEscape((td.textContent || '').trim())
-      );
-      lines.push(cols.join(','));
-    });
-
-    return lines.join('\n');
-  }
-
-  function buildStaffConditionsCSV() {
-    const header = ['スタッフ', '入れるシフト', '固定休', '月間上限(日)', '週上限(日/週)']
-      .map(csvEscape)
-      .join(',');
-
-    const sortedStaff = Array.isArray(state.staff)
-      ? state.staff.slice().sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'))
-      : [];
-
-    const lines = sortedStaff.map(staffMember => {
-      const name = staffMember?.name || '';
-      const available = joinList(Array.isArray(staffMember?.availableShifts) ? staffMember.availableShifts : []);
-      const fixed = mapFixedHolidaysToLabel(
-        Array.isArray(staffMember?.fixedHolidays) ? staffMember.fixedHolidays : []
-      );
-      const monthMax = staffMember?.maxWorkingDays ?? '';
-      const weekMax = staffMember?.maxDaysPerWeek ?? '';
-
-      return [name, available, fixed, monthMax, weekMax].map(csvEscape).join(',');
-    });
-
-    return [header].concat(lines).join('\n');
-  }
-
-  function buildDayoffsCSV() {
-    const header = ['スタッフ', '希望休日付'].map(csvEscape).join(',');
-    if (!Array.isArray(state.dayoffs) || state.dayoffs.length === 0) {
-      return header;
-    }
-
-    const resolveStaffName = dayoff => {
-      if (dayoff?.staffName) return dayoff.staffName;
-      if (dayoff?.staffId) {
-        const match = (state.staff || []).find(st => st.id === dayoff.staffId);
-        if (match?.name) return match.name;
-      }
-      return '不明';
-    };
-
-    const lines = state.dayoffs
-      .slice()
-      .sort((a, b) => {
-        const nameA = resolveStaffName(a);
-        const nameB = resolveStaffName(b);
-        const nameCompare = nameA.localeCompare(nameB, 'ja');
-        if (nameCompare !== 0) return nameCompare;
-        const dateA = a?.date || '';
-        const dateB = b?.date || '';
-        return dateA.localeCompare(dateB);
-      })
-      .map(dayoff => {
-        const name = resolveStaffName(dayoff);
-        const date = dayoff?.date || '';
-        return [name, date].map(csvEscape).join(',');
-      });
-
-    return [header].concat(lines).join('\n');
-  }
-
-  function exportCombinedCSV() {
-    const scheduleCSV = buildScheduleCSVFromTable();
-    const staffCSV = buildStaffConditionsCSV();
-    const dayoffsCSV = buildDayoffsCSV();
-
-    const sections = [];
-    if (scheduleCSV) {
-      sections.push(scheduleCSV);
-    }
-    if (staffCSV) {
-      if (sections.length > 0) sections.push('');
-      sections.push(staffCSV);
-    }
-    if (dayoffsCSV) {
-      if (sections.length > 0) sections.push('');
-      sections.push(dayoffsCSV);
-    }
-
-    const combined = sections.join('\n');
-
-    const output = document.getElementById('csv-output');
-    if (output) {
-      output.value = combined;
-      output.style.display = 'block';
-      output.select();
-      document.execCommand('copy');
-    }
-
-    if (combined) {
-      const blob = new Blob([combined], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'schedule_with_staff_conditions.csv';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    }
-
-    alert('結果＋条件のCSVをコピーし、ダウンロードも開始しました。');
-  }
 
   function saveState() {
     try {
@@ -630,13 +470,30 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function exportToCSV() {
+    const resultTable = document.querySelector('#result-area table');
     const csvOutput = document.getElementById('csv-output');
-    if (!csvOutput) {
+
+    if (!resultTable || !csvOutput) {
       console.error('CSV出力に必要な要素が見つかりません。');
       return;
     }
 
-    const csvString = buildScheduleCSVFromTable();
+    let csvString = '';
+    const rows = [];
+
+    const headerRow = resultTable.querySelector('thead tr:first-child');
+    if (headerRow) {
+      const headers = Array.from(headerRow.querySelectorAll('th')).map(th => `"${th.textContent.trim()}"`);
+      rows.push(headers.join(','));
+    }
+
+    const dataRows = resultTable.querySelectorAll('tbody tr');
+    dataRows.forEach(row => {
+      const cols = Array.from(row.querySelectorAll('td')).map(td => `"${td.textContent.trim()}"`);
+      rows.push(cols.join(','));
+    });
+
+    csvString = rows.join('\n');
 
     csvOutput.value = csvString;
     csvOutput.style.display = 'block';
@@ -2066,7 +1923,6 @@ document.addEventListener('DOMContentLoaded', function () {
   if (clearDayoffButton) clearDayoffButton.addEventListener('click', handleClearDayoffs);
   if (generateButton) generateButton.addEventListener('click', generateShift);
   if (exportCsvButton) exportCsvButton.addEventListener('click', exportToCSV);
-  if (exportCombinedCsvButton) exportCombinedCsvButton.addEventListener('click', exportCombinedCSV);
   if (exportXlsxButton) exportXlsxButton.addEventListener('click', exportToXLSX);
   if (modalSaveBtn) modalSaveBtn.addEventListener('click', handleModalSave);
   if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeStaffModal);
