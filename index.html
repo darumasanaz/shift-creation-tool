@@ -96,17 +96,36 @@
                     <label><input type="checkbox" name="modal-weekday" value="sat"> 土</label>
                     <label><input type="checkbox" name="modal-weekday" value="sun"> 日</label>
                 </div>
-                <label>月間勤務日数（下限〜上限）:</label>
-                <div class="range-row">
-                    <input type="number" id="modal-min-days" min="0" placeholder="下限 例: 10">
-                    <span class="range-sep">〜</span>
-                    <input type="number" id="modal-max-days" min="0" placeholder="上限 例: 12">
+                <!-- 月間 勤務日数（下限〜上限） -->
+                <label for="modal-min-days">月間勤務日数（下限〜上限）:</label>
+                <div class="range-control" id="month-range">
+                    <div class="range-row">
+                        <input type="number" id="modal-min-days" min="0" max="31" placeholder="下限 例:10" aria-label="月間下限">
+                        <span class="range-sep">〜</span>
+                        <input type="number" id="modal-max-days" min="0" max="31" placeholder="上限 例:12" aria-label="月間上限">
+                    </div>
+
+                    <div class="double-range">
+                        <input type="range" id="month-range-min" min="0" max="31" step="1" aria-label="月間下限スライダー">
+                        <input type="range" id="month-range-max" min="0" max="31" step="1" aria-label="月間上限スライダー">
+                        <div class="range-track" id="month-range-track" aria-hidden="true"></div>
+                    </div>
                 </div>
-                <label>週の勤務日数（下限〜上限）:</label>
-                <div class="range-row">
-                    <input type="number" id="modal-min-days-per-week" min="0" max="7" placeholder="下限 例: 3">
-                    <span class="range-sep">〜</span>
-                    <input type="number" id="modal-max-days-per-week" min="0" max="7" placeholder="上限 例: 5">
+
+                <!-- 週内 勤務日数（下限〜上限） -->
+                <label for="modal-min-days-per-week">週の勤務日数（下限〜上限）:</label>
+                <div class="range-control" id="week-range">
+                    <div class="range-row">
+                        <input type="number" id="modal-min-days-per-week" min="0" max="7" placeholder="下限 例:3" aria-label="週下限">
+                        <span class="range-sep">〜</span>
+                        <input type="number" id="modal-max-days-per-week" min="0" max="7" placeholder="上限 例:5" aria-label="週上限">
+                    </div>
+
+                    <div class="double-range">
+                        <input type="range" id="week-range-min" min="0" max="7" step="1" aria-label="週下限スライダー">
+                        <input type="range" id="week-range-max" min="0" max="7" step="1" aria-label="週上限スライダー">
+                        <div class="range-track" id="week-range-track" aria-hidden="true"></div>
+                    </div>
                 </div>
                 <div class="modal-actions">
                     <button type="button" id="modal-save-btn">保存</button>
