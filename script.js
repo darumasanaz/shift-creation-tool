@@ -26,6 +26,71 @@ document.addEventListener('DOMContentLoaded', function () {
     { name: '夜勤C', start: 21, end: 31 },
   ];
 
+  // 週インデックス（Mon–Sun）: 0=第1週
+  function getWeekIndex(year, month, day) {
+    const d = new Date(year, month - 1, day);
+    const dayOfWeek = d.getDay();
+    const first = new Date(year, month - 1, 1);
+    const offset = ((first.getDay() + 6) % 7);
+    const nth = Math.floor((day - 1 + offset) / 7);
+    return nth;
+  }
+
+  // 各スタッフの使用カウンタ（週/⽉）を初期化
+  function buildUsageTrackers(staffRecords, year, month) {
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const usage = new Map();
+    staffRecords.forEach(r => {
+      usage.set(r.staffObject.id, {
+        month: 0,
+        week: {},
+      });
+    });
+    return { usage, daysInMonth };
+  }
+
+  function getWeeklyUsed(usage, staffId, weekIndex) {
+    const u = usage.get(staffId);
+    return u.week[weekIndex] || 0;
+  }
+
+  function incUsage(usage, staffId, weekIndex) {
+    const u = usage.get(staffId);
+    u.month += 1;
+    u.week[weekIndex] = (u.week[weekIndex] || 0) + 1;
+  }
+
+  // その日が固定休/希望休ならtrue
+  function isHardOffDay(record, dateStr) {
+    const dow = new Date(dateStr).getDay();
+    const fixed = record.fixedHolidays || [];
+    const fixedHit = fixed.includes(String(dow));
+    const reqOff = isDayOff(record.staffObject, dateStr);
+    return !!(fixedHit || reqOff);
+  }
+
+  // 夜勤Aの翌2日、夜勤Cの翌1⽇を休みにできるか（セル空/未ロック/既休でOK）を確認
+  function canReserveRestWindow(record, dayIndex, days, daysInMonth) {
+    for (let i = 1; i <= days; i++) {
+      const idx = dayIndex + i;
+      if (idx >= daysInMonth) return false;
+      const cell = record.cells[idx];
+      if (!cell) return false;
+      if (cell.assignment && cell.assignment !== '休み') return false;
+    }
+    return true;
+  }
+
+  function applyRestWindow(record, dayIndex, days) {
+    for (let i = 1; i <= days; i++) {
+      const cell = record.cells[dayIndex + i];
+      if (!cell) continue;
+      if (!cell.assignment || cell.assignment !== '休み') {
+        markForcedRest(cell);
+      }
+    }
+  }
+
   // 夜勤専従判定：夜勤B or 夜勤C を持っているスタッフは常に夜勤専従として扱う
   function isNightDedicated(recordOrStaff) {
     const s = recordOrStaff && recordOrStaff.staffObject ? recordOrStaff.staffObject : recordOrStaff;
@@ -59,20 +124,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const MAX_CONSECUTIVE_WORKDAYS = 5;
   const NIGHT_SHIFTS = ['夜勤A', '夜勤B', '夜勤C'];
-  const MIN_WORKDAY_GOAL_RATIO = 0;
-  const MIN_GOAL_BONUS_WEIGHT = 10;
-  const FAIR_WEIGHTS = {
-    progressPenalty: 4,
-    monthOver: 2,
-    weekRisk: 6,
-    streakNearMax: 2,
-  };
-  const WORKDAY_RANGE_WEIGHTS = {
-    monthMinBonus: 20,
-    monthMaxPenalty: 50,
-    weekMinBonus: 15,
-    weekMaxPenalty: 40,
-  };
   const NIGHT_STRICT_HOURS = [21, 22, 23, 0, 1, 2, 3, 4, 5, 6];
   const EVENING_HOURS = [18, 19, 20];
   const DAY_NEED_WEIGHT = 10;
@@ -710,39 +761,6 @@ document.addEventListener('DOMContentLoaded', function () {
     return EVENING_HOURS.includes(hour);
   }
 
-  function calculateNightCoverageNeeds(supplyMap, dayType, nextDayType) {
-    const status = {
-      strictBelowMin: false,
-      eveningBelowMin: false,
-    };
-    if (!Array.isArray(supplyMap)) {
-      return status;
-    }
-
-    [21, 22, 23].forEach(hour => {
-      const { min } = getMinMaxForHour(dayType, hour, false);
-      if ((supplyMap[hour] || 0) < min) {
-        status.strictBelowMin = true;
-      }
-    });
-
-    for (let hour = 0; hour <= 6; hour++) {
-      const { min } = getMinMaxForHour(nextDayType, hour, true);
-      if ((supplyMap[hour] || 0) < min) {
-        status.strictBelowMin = true;
-      }
-    }
-
-    EVENING_HOURS.forEach(hour => {
-      const { min } = getMinMaxForHour(dayType, hour, false);
-      if ((supplyMap[hour] || 0) < min) {
-        status.eveningBelowMin = true;
-      }
-    });
-
-    return status;
-  }
-
   function calculateDeficitMap(needsMap, supplyMap) {
     const deficit = new Array(24).fill(0);
     for (let hour = 0; hour < 24; hour++) {
@@ -755,10 +773,89 @@ document.addEventListener('DOMContentLoaded', function () {
     return deficit;
   }
 
+  function fillDedicatedNightBCForDay(
+    dedicatedRecords,
+    allRecords,
+    dayIndex,
+    dayType,
+    nextDayType,
+    daysInMonth,
+    year,
+    month,
+    usageObj
+  ) {
+    if (!Array.isArray(dedicatedRecords) || !dedicatedRecords.length) {
+      return;
+    }
+
+    const allowed = ['夜勤C', '夜勤B'];
+    let assigned = collectAssignmentsForDay(allRecords, dayIndex);
+    let supply = createHourlySupplyMap(assigned);
+    const needsMap = createHourlyNeedsMap(dayType);
+
+    while (true) {
+      const deficit = calculateDeficitMap(needsMap, supply);
+      if (!hasPositiveDeficitForShifts(deficit, allowed)) {
+        break;
+      }
+
+      const avail = collectEligibleRecords(dedicatedRecords, dayIndex, allowed, year, month, usageObj);
+      if (!avail.length) {
+        break;
+      }
+
+      const best = findBestAssignment(
+        avail,
+        deficit,
+        dayIndex,
+        allowed,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        supply,
+        year,
+        month,
+        usageObj
+      );
+      if (!best) {
+        break;
+      }
+
+      const { staffRecord, shift } = best;
+      if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
+        markForcedRest(staffRecord.cells[dayIndex]);
+        continue;
+      }
+
+      assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
+      if (usageObj && usageObj.usage) {
+        const weekIndex = getWeekIndex(year, month, dayIndex + 1);
+        incUsage(usageObj.usage, staffRecord.staffObject.id, weekIndex);
+      }
+
+      if (shift.name === '夜勤C') {
+        applyRestWindow(staffRecord, dayIndex, 1);
+      }
+
+      assigned.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
+      supply = createHourlySupplyMap(assigned);
+    }
+  }
+
   // 朝7-9の最優先充足（>=3名）。昼の候補は夜勤専従を除く集合からのみ選ぶ。
-  function fillMorningBand7to9(candidateRecords, dayIndex, dayType, nextDayType, daysInMonth) {
+  function fillMorningBand7to9(
+    candidateRecords,
+    allRecords,
+    dayIndex,
+    dayType,
+    nextDayType,
+    daysInMonth,
+    year,
+    month,
+    usageObj
+  ) {
     const allowed = ['早番', '日勤A'];
-    let assigned = collectAssignmentsForDay(candidateRecords, dayIndex);
+    let assigned = collectAssignmentsForDay(allRecords, dayIndex);
     let supply = createHourlySupplyMap(assigned);
 
     while (true) {
@@ -768,7 +865,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       const needsMap = createHourlyNeedsMap(dayType);
       const deficit = calculateDeficitMap(needsMap, supply);
-      const avail = collectEligibleRecords(candidateRecords, dayIndex, allowed);
+      const avail = collectEligibleRecords(candidateRecords, dayIndex, allowed, year, month, usageObj);
       if (!avail.length) break;
 
       const best = findBestAssignment(
@@ -779,7 +876,10 @@ document.addEventListener('DOMContentLoaded', function () {
         dayType,
         nextDayType,
         daysInMonth,
-        supply
+        supply,
+        year,
+        month,
+        usageObj
       );
       if (!best) break;
 
@@ -790,20 +890,32 @@ document.addEventListener('DOMContentLoaded', function () {
       }
 
       assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
-      staffRecord.workdaysInMonth += 1;
-      staffRecord.workdaysInWeek += 1;
+      if (usageObj && usageObj.usage) {
+        const weekIndex = getWeekIndex(year, month, dayIndex + 1);
+        incUsage(usageObj.usage, staffRecord.staffObject.id, weekIndex);
+      }
 
       assigned.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
       supply = createHourlySupplyMap(assigned);
     }
   }
 
-  function fillDaytimeBandsForDay(candidateRecords, dayIndex, dayType, nextDayType, daysInMonth) {
+  function fillDaytimeBandsForDay(
+    candidateRecords,
+    allRecords,
+    dayIndex,
+    dayType,
+    nextDayType,
+    daysInMonth,
+    year,
+    month,
+    usageObj
+  ) {
     const bands = [
       { hours: [9, 15], allowed: ['日勤A', '日勤B'] },
       { hours: [16, 18], allowed: ['日勤A', '遅番'] },
     ];
-    let assigned = collectAssignmentsForDay(candidateRecords, dayIndex);
+    let assigned = collectAssignmentsForDay(allRecords, dayIndex);
     let supply = createHourlySupplyMap(assigned);
     const needsMap = createHourlyNeedsMap(dayType);
 
@@ -814,7 +926,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const hasDef = deficit.slice(a, b).some(v => v > 0);
         if (!hasDef) break;
 
-        const avail = collectEligibleRecords(candidateRecords, dayIndex, band.allowed);
+        const avail = collectEligibleRecords(candidateRecords, dayIndex, band.allowed, year, month, usageObj);
         if (!avail.length) break;
 
         const best = findBestAssignment(
@@ -825,7 +937,10 @@ document.addEventListener('DOMContentLoaded', function () {
           dayType,
           nextDayType,
           daysInMonth,
-          supply
+          supply,
+          year,
+          month,
+          usageObj
         );
         if (!best) break;
 
@@ -836,12 +951,78 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
-        staffRecord.workdaysInMonth += 1;
-        staffRecord.workdaysInWeek += 1;
+        if (usageObj && usageObj.usage) {
+          const weekIndex = getWeekIndex(year, month, dayIndex + 1);
+          incUsage(usageObj.usage, staffRecord.staffObject.id, weekIndex);
+        }
 
         assigned.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
         supply = createHourlySupplyMap(assigned);
       }
+    }
+  }
+
+  function fillRemainingNightShiftsForDay(
+    allRecords,
+    dayIndex,
+    dayType,
+    nextDayType,
+    daysInMonth,
+    year,
+    month,
+    usageObj
+  ) {
+    const allowed = ['夜勤A'];
+    let assigned = collectAssignmentsForDay(allRecords, dayIndex);
+    let supply = createHourlySupplyMap(assigned);
+    const needsMap = createHourlyNeedsMap(dayType);
+
+    while (true) {
+      const deficit = calculateDeficitMap(needsMap, supply);
+      if (!hasPositiveDeficitForShifts(deficit, allowed)) {
+        break;
+      }
+
+      const avail = collectEligibleRecords(allRecords, dayIndex, allowed, year, month, usageObj);
+      if (!avail.length) {
+        break;
+      }
+
+      const best = findBestAssignment(
+        avail,
+        deficit,
+        dayIndex,
+        allowed,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        supply,
+        year,
+        month,
+        usageObj
+      );
+      if (!best) {
+        break;
+      }
+
+      const { staffRecord, shift } = best;
+      if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
+        markForcedRest(staffRecord.cells[dayIndex]);
+        continue;
+      }
+
+      assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
+      if (usageObj && usageObj.usage) {
+        const weekIndex = getWeekIndex(year, month, dayIndex + 1);
+        incUsage(usageObj.usage, staffRecord.staffObject.id, weekIndex);
+      }
+
+      if (shift.name === '夜勤A') {
+        applyRestWindow(staffRecord, dayIndex, 2);
+      }
+
+      assigned.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
+      supply = createHourlySupplyMap(assigned);
     }
   }
 
@@ -1035,6 +1216,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const tbl = document.getElementById('shortage-table');
     if (!tbl) return;
     tbl.innerHTML = '';
+    const caption = document.createElement('caption');
+    caption.textContent = '※スタッフの上限・固定休など全ハード制約を順守した上での不足量です。';
+    tbl.appendChild(caption);
     const thead = document.createElement('thead');
     thead.innerHTML = `<tr>
     <th>日</th><th>7-9</th><th>9-15</th><th>16-18</th><th>18-21</th><th>21-24</th><th>0-7</th><th>合計不足</th>
@@ -1072,10 +1256,6 @@ document.addEventListener('DOMContentLoaded', function () {
     cellRecord.assignment = '休み';
     cellRecord.backgroundColor = backgroundColor;
     cellRecord.isLocked = true;
-  }
-
-  function markNightShiftRest(cellRecord) {
-    markCellAsOff(cellRecord, '#fff2cc');
   }
 
   function markForcedRest(cellRecord) {
@@ -1120,28 +1300,22 @@ document.addEventListener('DOMContentLoaded', function () {
       : [];
     if (!available.includes(shiftName)) return false;
 
-    const maxDays = record.staffObject.maxWorkingDays;
-    if (isFiniteNumber(maxDays) && record.workdaysInMonth >= maxDays) {
-      return false;
-    }
-
-    const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-    if (isFiniteNumber(maxDaysPerWeek)) {
-      const weeklyWorked = record.workdaysInWeek || 0;
-      if (weeklyWorked >= maxDaysPerWeek) {
-        return false;
-      }
-    }
-
     return true;
   }
 
-  function collectEligibleRecords(staffRecords, dayIndex, allowedShiftNames = null) {
+  function collectEligibleRecords(
+    staffRecords,
+    dayIndex,
+    allowedShiftNames = null,
+    year = null,
+    month = null,
+    usageObj = null
+  ) {
     return staffRecords.filter(record => {
       const cell = record.cells[dayIndex];
-      if (!cell || cell.isLocked || cell.assignment) {
-        return false;
-      }
+      if (!cell || cell.isLocked || cell.assignment) return false;
+
+      if (isHardOffDay(record, cell.dateStr)) return false;
 
       const available = Array.isArray(record.staffObject.availableShifts)
         ? record.staffObject.availableShifts
@@ -1149,34 +1323,46 @@ document.addEventListener('DOMContentLoaded', function () {
       const candidateShifts = allowedShiftNames
         ? available.filter(name => allowedShiftNames.includes(name))
         : available.slice();
-      if (!candidateShifts.length) {
+      if (!candidateShifts.length) return false;
+
+      if (year != null && month != null && usageObj) {
+        const { usage } = usageObj;
+        if (usage && usage.has(record.staffObject.id)) {
+          const staffId = record.staffObject.id;
+          const weekIndex = getWeekIndex(year, month, dayIndex + 1);
+          const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
+          const maxMonth = record.staffObject.maxWorkingDays;
+
+          if (
+            Number.isFinite(maxDaysPerWeek) &&
+            getWeeklyUsed(usage, staffId, weekIndex) >= maxDaysPerWeek
+          ) {
+            return false;
+          }
+          if (Number.isFinite(maxMonth) && usage.get(staffId).month >= maxMonth) {
+            return false;
+          }
+        }
+      }
+
+      if (countConsecutiveWorkdays(record, dayIndex) >= MAX_CONSECUTIVE_WORKDAYS) {
         return false;
       }
 
-      const maxDays = record.staffObject.maxWorkingDays;
-      if (isFiniteNumber(maxDays) && record.workdaysInMonth >= maxDays) {
-        return false;
+      if (allowedShiftNames && allowedShiftNames.length === 1) {
+        const name = allowedShiftNames[0];
+        if (name === '夜勤A') {
+          if (!canReserveRestWindow(record, dayIndex, 2, record.cells.length)) return false;
+        }
+        if (name === '夜勤C') {
+          if (!canReserveRestWindow(record, dayIndex, 1, record.cells.length)) return false;
+        }
       }
 
-      const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-      if (isFiniteNumber(maxDaysPerWeek) && record.workdaysInWeek >= maxDaysPerWeek) {
-        return false;
-      }
+      // 将来的に月間・週間の下限設定を導入する場合はここで扱う（現時点では未使用）
 
       return true;
     });
-  }
-
-  function isNightOnlyRecord(record) {
-    if (!record || !record.staffObject) {
-      return false;
-    }
-    const available = Array.isArray(record.staffObject.availableShifts)
-      ? record.staffObject.availableShifts
-      : [];
-    const canNight = available.some(name => NIGHT_SHIFTS.includes(name));
-    const canDay = available.some(name => DAYTIME_SHIFTS.includes(name));
-    return canNight && !canDay;
   }
 
   function collectAssignmentsForDay(staffRecords, dayIndex) {
@@ -1201,13 +1387,6 @@ document.addEventListener('DOMContentLoaded', function () {
     return assignments;
   }
 
-  function resetWorkCounters(staffRecords) {
-    staffRecords.forEach(record => {
-      record.workdaysInMonth = 0;
-      record.workdaysInWeek = 0;
-    });
-  }
-
   function hasPositiveDeficitForShifts(deficitMap, shiftNames) {
     return shiftNames.some(shiftName => {
       const definition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
@@ -1221,34 +1400,6 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  function enforceConsecutiveRest(staffRecords, daysInMonth) {
-    let changed = true;
-    while (changed) {
-      changed = false;
-      staffRecords.forEach(record => {
-        let consecutive = 0;
-        for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
-          const cell = record.cells[dayIndex];
-          if (!cell) continue;
-
-          if (!isWorkingAssignment(cell.assignment)) {
-            consecutive = 0;
-            continue;
-          }
-
-          consecutive += 1;
-          if (consecutive > MAX_CONSECUTIVE_WORKDAYS) {
-            if (!cell.isLocked || cell.assignment !== '休み') {
-              markForcedRest(cell);
-              changed = true;
-            }
-            consecutive = 0;
-          }
-        }
-      });
-    }
-  }
-
   function findBestAssignment(
     availableRecords,
     deficitMap,
@@ -1257,7 +1408,10 @@ document.addEventListener('DOMContentLoaded', function () {
     dayType = null,
     nextDayType = null,
     daysInMonth = 30,
-    currentSupplyMap = null
+    currentSupplyMap = null,
+    year = null,
+    month = null,
+    usageObj = null
   ) {
     if (!Array.isArray(availableRecords) || !availableRecords.length) {
       return null;
@@ -1297,6 +1451,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
       const consecutiveWorkdays = typeof dayIndex === 'number' ? countConsecutiveWorkdays(record, dayIndex) : 0;
 
+      const staffId = record.staffObject.id;
+      const tracker = usageObj ? usageObj.usage : null;
+      const weekIndex = year != null && month != null ? getWeekIndex(year, month, dayIndex + 1) : null;
+      const usedMonth = tracker && tracker.has(staffId) ? tracker.get(staffId).month : 0;
+      const usedWeek = tracker && tracker.has(staffId) && weekIndex != null ? getWeeklyUsed(tracker, staffId, weekIndex) : 0;
+
       candidateShifts.forEach(shiftName => {
         const shiftDefinition = SHIFT_DEFINITIONS.find(def => def.name === shiftName);
         if (!shiftDefinition) return;
@@ -1315,13 +1475,25 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const maxDays = record.staffObject.maxWorkingDays;
-        if (isFiniteNumber(maxDays) && record.workdaysInMonth + 1 > maxDays) {
+        if (Number.isFinite(maxDays) && usedMonth >= maxDays) {
           return;
         }
 
         const maxDaysPerWeek = record.staffObject.maxDaysPerWeek;
-        if (isFiniteNumber(maxDaysPerWeek) && record.workdaysInWeek + 1 > maxDaysPerWeek) {
+        if (Number.isFinite(maxDaysPerWeek) && usedWeek >= maxDaysPerWeek) {
           return;
+        }
+
+        if (shiftDefinition.name === '夜勤A') {
+          if (!canReserveRestWindow(record, dayIndex, 2, daysInMonth)) {
+            return;
+          }
+        }
+
+        if (shiftDefinition.name === '夜勤C') {
+          if (!canReserveRestWindow(record, dayIndex, 1, daysInMonth)) {
+            return;
+          }
         }
 
         if (
@@ -1390,58 +1562,6 @@ document.addEventListener('DOMContentLoaded', function () {
           }
         }
 
-        const normalizedDaysInMonth = Number.isFinite(daysInMonth) && daysInMonth > 0 ? daysInMonth : 30;
-        const dayPosition = typeof dayIndex === 'number' ? dayIndex + 1 : 1;
-        const monthWorkAfter = (record.workdaysInMonth || 0) + 1;
-        const minMonthGoal = isFiniteNumber(record.staffObject.minWorkingDays)
-          ? record.staffObject.minWorkingDays
-          : null;
-        const maxMonthLimit = isFiniteNumber(record.staffObject.maxWorkingDays)
-          ? record.staffObject.maxWorkingDays
-          : null;
-        const fallbackMonthTarget = Math.ceil(normalizedDaysInMonth * 0.55);
-        const monthTarget = minMonthGoal != null ? minMonthGoal : fallbackMonthTarget;
-        const expectedByToday = Math.round(monthTarget * (dayPosition / normalizedDaysInMonth));
-        const progressOver = Math.max(0, monthWorkAfter - expectedByToday);
-        score -= FAIR_WEIGHTS.progressPenalty * progressOver;
-
-        if (Number.isFinite(monthTarget) && monthWorkAfter > monthTarget) {
-          score -= FAIR_WEIGHTS.monthOver * (monthWorkAfter - monthTarget);
-        }
-
-        if (minMonthGoal != null && monthWorkAfter <= minMonthGoal) {
-          score += WORKDAY_RANGE_WEIGHTS.monthMinBonus * (minMonthGoal - monthWorkAfter + 1);
-        }
-
-        if (maxMonthLimit != null && monthWorkAfter > maxMonthLimit) {
-          score -= WORKDAY_RANGE_WEIGHTS.monthMaxPenalty * (monthWorkAfter - maxMonthLimit);
-        }
-
-        const weekAfter = (record.workdaysInWeek || 0) + 1;
-        const minWeekGoal = isFiniteNumber(record.staffObject.minDaysPerWeek)
-          ? record.staffObject.minDaysPerWeek
-          : null;
-        const maxWeekLimit = isFiniteNumber(maxDaysPerWeek) ? maxDaysPerWeek : null;
-
-        if (minWeekGoal != null && weekAfter <= minWeekGoal) {
-          score += WORKDAY_RANGE_WEIGHTS.weekMinBonus * (minWeekGoal - weekAfter + 1);
-        }
-
-        if (maxWeekLimit != null && weekAfter > maxWeekLimit) {
-          score -= WORKDAY_RANGE_WEIGHTS.weekMaxPenalty * (weekAfter - maxWeekLimit);
-        }
-
-        if (isFiniteNumber(maxDaysPerWeek)) {
-          const threshold = Math.max(1, maxDaysPerWeek - 1);
-          if (weekAfter > threshold) {
-            score -= FAIR_WEIGHTS.weekRisk * (weekAfter - threshold);
-          }
-        }
-
-        if (wouldBeConsecutive >= MAX_CONSECUTIVE_WORKDAYS) {
-          score -= FAIR_WEIGHTS.streakNearMax * (wouldBeConsecutive - MAX_CONSECUTIVE_WORKDAYS + 1);
-        }
-
         if (score <= 0) {
           return;
         }
@@ -1468,9 +1588,12 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (bestMove && score === bestMove.score) {
-          const currentMonthWork = record.workdaysInMonth || 0;
-          const bestMonthWork = bestMove.staffRecord ? bestMove.staffRecord.workdaysInMonth || 0 : 0;
-          if (currentMonthWork < bestMonthWork) {
+          const currentMonthUsage = tracker && tracker.has(staffId) ? tracker.get(staffId).month : 0;
+          const bestStaffId = bestMove.staffRecord?.staffObject?.id;
+          const bestMonthUsage = tracker && bestStaffId != null && tracker.has(bestStaffId)
+            ? tracker.get(bestStaffId).month
+            : 0;
+          if (currentMonthUsage < bestMonthUsage) {
             bestMove = {
               staffRecord: record,
               shift: shiftDefinition,
@@ -1541,9 +1664,15 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     const dedicatedNightRecords = staffRecords.filter(r => isNightDedicated(r));
+    const nightExclusiveRecords = dedicatedNightRecords.filter(record => {
+      const shifts = Array.isArray(record.staffObject.availableShifts)
+        ? record.staffObject.availableShifts
+        : [];
+      return shifts.length > 0 && shifts.every(name => name === '夜勤B' || name === '夜勤C');
+    });
     const nonDedicatedRecords = staffRecords.filter(r => !isNightDedicated(r));
 
-    // Phase 1: establish rest blocks from fixed and requested holidays
+    // 固定休・希望休を事前に反映
     staffRecords.forEach(record => {
       record.cells.forEach(cellRecord => {
         if (record.fixedHolidays.includes(String(cellRecord.dayOfWeek))) {
@@ -1560,150 +1689,105 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       });
     });
+    const usageObj = buildUsageTrackers(staffRecords, year, month);
 
-    // Phase 2: allocate night shifts before daytime coverage
-    resetWorkCounters(staffRecords);
-    for (let day = 1; day <= daysInMonth; day++) {
-      const dayIndex = day - 1;
-      const currentDate = new Date(year, month - 1, day);
-      const dayOfWeek = currentDate.getDay();
-
-      if (dayOfWeek === 0) {
-        staffRecords.forEach(record => {
-          record.workdaysInWeek = 0;
-        });
-      }
-
-      const dayType = getDayType(dayOfWeek);
-      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
-      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
-      const needsMap = createHourlyNeedsMap(dayType);
-      let assignedShiftsThisDay = collectAssignmentsForDay(staffRecords, dayIndex);
-
-      assignedShiftsThisDay.forEach(entry => {
-        entry.record.workdaysInMonth += 1;
-        entry.record.workdaysInWeek += 1;
+    staffRecords.forEach(record => {
+      record.cells.forEach((cellRecord, index) => {
+        if (!isWorkingAssignment(cellRecord.assignment)) return;
+        const weekIndex = getWeekIndex(year, month, index + 1);
+        incUsage(usageObj.usage, record.staffObject.id, weekIndex);
       });
+    });
 
-      let supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
-
-      while (true) {
-        const deficitMap = calculateDeficitMap(needsMap, supplyMap);
-        const nightStatus = calculateNightCoverageNeeds(supplyMap, dayType, nextDayType);
-        if (!nightStatus.strictBelowMin && !nightStatus.eveningBelowMin) {
-          break;
-        }
-
-        let allowedShifts = null;
-        if (nightStatus.strictBelowMin) {
-          allowedShifts = NIGHT_SHIFTS;
-        } else if (nightStatus.eveningBelowMin) {
-          allowedShifts = ['遅番', '夜勤B', '夜勤A'];
-        }
-        if (!allowedShifts) {
-          break;
-        }
-
-        let candidates = collectEligibleRecords(dedicatedNightRecords, dayIndex, allowedShifts);
-        if (!candidates.length) {
-          candidates = collectEligibleRecords(nonDedicatedRecords, dayIndex, allowedShifts);
-        }
-        if (!candidates.length) {
-          break;
-        }
-
-        const bestMove = findBestAssignment(
-          candidates,
-          deficitMap,
-          dayIndex,
-          allowedShifts,
-          dayType,
-          nextDayType,
-          daysInMonth,
-          supplyMap
-        );
-        if (!bestMove) {
-          break;
-        }
-
-        const { staffRecord, shift } = bestMove;
-        if (!canAssignShift(staffRecord, dayIndex, shift.name)) {
-          markForcedRest(staffRecord.cells[dayIndex]);
-          continue;
-        }
-
-        assignShiftToCell(staffRecord.cells[dayIndex], shift.name);
-        staffRecord.workdaysInMonth += 1;
-        staffRecord.workdaysInWeek += 1;
-
-        assignedShiftsThisDay.push({ staff: staffRecord.staffObject, shift, record: staffRecord });
-        supplyMap = createHourlySupplyMap(assignedShiftsThisDay);
-
-        if (NIGHT_SHIFTS.includes(shift.name)) {
-          const nextIndex = dayIndex + 1;
-          if (nextIndex < daysInMonth) {
-            const nextCell = staffRecord.cells[nextIndex];
-            if (nextCell) {
-              if (isWorkingAssignment(nextCell.assignment)) {
-                nextCell.assignment = '';
-                nextCell.backgroundColor = '';
-                nextCell.isLocked = false;
-              }
-              markNightShiftRest(nextCell);
-            }
-          }
-
-          if (shift.name === '夜勤A') {
-            const next2 = dayIndex + 2;
-            if (next2 < daysInMonth) {
-              const c2 = staffRecord.cells[next2];
-              if (c2 && !c2.isLocked) {
-                markNightShiftRest(c2);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Phase 3: prioritize morning coverage (7-9) with non-night-dedicated staff
-    resetWorkCounters(staffRecords);
+    // Phase 1: 夜勤B/C専従の先行割付
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
       const currentDate = new Date(year, month - 1, day);
       const dayOfWeek = currentDate.getDay();
 
-      if (dayOfWeek === 0) {
-        staffRecords.forEach(record => {
-          record.workdaysInWeek = 0;
-        });
-      }
-
       const dayType = getDayType(dayOfWeek);
       const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
       const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
 
-      fillMorningBand7to9(nonDedicatedRecords, dayIndex, dayType, nextDayType, daysInMonth);
+      fillDedicatedNightBCForDay(
+        nightExclusiveRecords,
+        staffRecords,
+        dayIndex,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        year,
+        month,
+        usageObj
+      );
     }
 
-    // Phase 4: fill remaining daytime bands with non-night-dedicated staff
-    resetWorkCounters(staffRecords);
+    // Phase 2: 朝帯7-9の最優先充足
     for (let day = 1; day <= daysInMonth; day++) {
       const dayIndex = day - 1;
       const currentDate = new Date(year, month - 1, day);
       const dayOfWeek = currentDate.getDay();
 
-      if (dayOfWeek === 0) {
-        staffRecords.forEach(record => {
-          record.workdaysInWeek = 0;
-        });
-      }
+      const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
+
+      fillMorningBand7to9(
+        nonDedicatedRecords,
+        staffRecords,
+        dayIndex,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        year,
+        month,
+        usageObj
+      );
+    }
+
+    // Phase 3: 9-15帯の充足
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
 
       const dayType = getDayType(dayOfWeek);
       const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
       const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
 
-      fillDaytimeBandsForDay(nonDedicatedRecords, dayIndex, dayType, nextDayType, daysInMonth);
+      fillDaytimeBandsForDay(
+        nonDedicatedRecords,
+        staffRecords,
+        dayIndex,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        year,
+        month,
+        usageObj
+      );
+    }
+
+    // Phase 4: 残り夜勤（主に夜勤A）
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dayIndex = day - 1;
+      const currentDate = new Date(year, month - 1, day);
+      const dayOfWeek = currentDate.getDay();
+
+      const dayType = getDayType(dayOfWeek);
+      const nextDayOfWeek = day < daysInMonth ? new Date(year, month - 1, day + 1).getDay() : null;
+      const nextDayType = nextDayOfWeek != null ? getDayType(nextDayOfWeek) : null;
+
+      fillRemainingNightShiftsForDay(
+        staffRecords,
+        dayIndex,
+        dayType,
+        nextDayType,
+        daysInMonth,
+        year,
+        month,
+        usageObj
+      );
     }
 
     const validation = safeRun(() => validateSchedule(staffRecords, daysInMonth, year, month));
