@@ -26,6 +26,13 @@ document.addEventListener('DOMContentLoaded', function () {
     { name: '夜勤C', start: 21, end: 31 },
   ];
 
+  const SAMPLE_OUTPUTS = {
+    dec2025: {
+      label: '2025年12月（現場データ・日本語表記）',
+      path: 'frontend/public/samples/output_dec2025.json',
+    },
+  };
+
   // 週インデックス（Mon–Sun）: 0=第1週
   function getWeekIndex(year, month, day) {
     const d = new Date(year, month - 1, day);
@@ -152,6 +159,8 @@ document.addEventListener('DOMContentLoaded', function () {
   const addDayoffButton = document.getElementById('add-dayoff-button');
   const dayoffList = document.getElementById('dayoff-list');
   const clearDayoffButton = document.getElementById('clear-dayoff-button');
+
+  const sampleLoadButtons = document.querySelectorAll('[data-sample-output]');
 
   const generateButton = document.getElementById('generate-btn');
   const exportCsvButton = document.getElementById('export-csv-btn');
@@ -520,18 +529,11 @@ document.addEventListener('DOMContentLoaded', function () {
     resultTable.appendChild(tbody);
   }
 
-  function exportToCSV() {
+  function buildCsvFromResultTable() {
     const resultTable = document.querySelector('#result-area table');
-    const csvOutput = document.getElementById('csv-output');
+    if (!resultTable) return '';
 
-    if (!resultTable || !csvOutput) {
-      console.error('CSV出力に必要な要素が見つかりません。');
-      return;
-    }
-
-    let csvString = '';
     const rows = [];
-
     const headerRow = resultTable.querySelector('thead tr:first-child');
     if (headerRow) {
       const headers = Array.from(headerRow.querySelectorAll('th')).map(th => `"${th.textContent.trim()}"`);
@@ -544,7 +546,37 @@ document.addEventListener('DOMContentLoaded', function () {
       rows.push(cols.join(','));
     });
 
-    csvString = rows.join('\n');
+    return rows.join('\n');
+  }
+
+  function refreshCsvPreview() {
+    const csvOutput = document.getElementById('csv-output');
+    if (!csvOutput) return;
+
+    const csvString = buildCsvFromResultTable();
+    if (!csvString) {
+      csvOutput.value = '';
+      csvOutput.style.display = 'none';
+      return;
+    }
+
+    csvOutput.value = csvString;
+    csvOutput.style.display = 'block';
+  }
+
+  function exportToCSV() {
+    const csvOutput = document.getElementById('csv-output');
+
+    if (!csvOutput) {
+      console.error('CSV出力に必要な要素が見つかりません。');
+      return;
+    }
+
+    const csvString = buildCsvFromResultTable();
+    if (!csvString) {
+      alert('出力するシフト表がありません。');
+      return;
+    }
 
     csvOutput.value = csvString;
     csvOutput.style.display = 'block';
@@ -1810,6 +1842,79 @@ document.addEventListener('DOMContentLoaded', function () {
         cellRecord.cell.style.backgroundColor = cellRecord.backgroundColor || '';
       });
     });
+
+    refreshCsvPreview();
+  }
+
+  async function loadSampleOutput(sampleKey) {
+    const definition = SAMPLE_OUTPUTS[sampleKey];
+    if (!definition) {
+      console.warn('未定義のサンプルキーです:', sampleKey);
+      return;
+    }
+
+    try {
+      const response = await fetch(definition.path);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch sample: ${response.status}`);
+      }
+      const data = await response.json();
+      applySampleResult(data);
+    } catch (error) {
+      console.error('サンプルの読み込みに失敗しました', error);
+      alert('サンプルの読み込みに失敗しました。');
+    }
+  }
+
+  function applySampleResult(data) {
+    if (!data || !Array.isArray(data.assignments)) {
+      console.warn('サンプルデータの形式が不正です。');
+      return;
+    }
+
+    if (typeof data.year === 'number' && typeof data.month === 'number') {
+      state.targetYear = data.year;
+      state.targetMonth = data.month;
+    }
+
+    renderHeader();
+
+    const tbody = document.getElementById('result-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    const daysInMonth = new Date(state.targetYear, state.targetMonth, 0).getDate();
+
+    data.assignments.forEach((assignment, index) => {
+      const tr = document.createElement('tr');
+      const nameCell = document.createElement('td');
+      const displayName =
+        assignment.displayName ||
+        assignment.staffName ||
+        assignment.staffId ||
+        assignment.id ||
+        `スタッフ${index + 1}`;
+      nameCell.textContent = displayName;
+      tr.appendChild(nameCell);
+
+      const shifts = Array.isArray(assignment.shifts) ? assignment.shifts : [];
+      for (let dayIndex = 0; dayIndex < daysInMonth; dayIndex++) {
+        const td = document.createElement('td');
+        td.textContent = shifts[dayIndex] || '';
+        tr.appendChild(td);
+      }
+
+      tbody.appendChild(tr);
+    });
+
+    const shortageRows = Array.isArray(data.shortageSummary) ? data.shortageSummary : [];
+    renderShortageTable(shortageRows);
+    const shortageBtn = document.getElementById('export-shortage-csv-btn');
+    if (shortageBtn) {
+      shortageBtn.onclick = () => exportShortageCSV(shortageRows);
+    }
+
+    refreshCsvPreview();
   }
 
   function isDayOff(staffObject, dateStr) {
@@ -2010,6 +2115,14 @@ document.addEventListener('DOMContentLoaded', function () {
   if (exportXlsxButton) exportXlsxButton.addEventListener('click', exportToXLSX);
   if (modalSaveBtn) modalSaveBtn.addEventListener('click', handleModalSave);
   if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeStaffModal);
+  sampleLoadButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const key = button.getAttribute('data-sample-output');
+      if (key) {
+        loadSampleOutput(key);
+      }
+    });
+  });
   if (staffModal) {
     staffModal.addEventListener('click', event => {
       if (event.target === staffModal) {
